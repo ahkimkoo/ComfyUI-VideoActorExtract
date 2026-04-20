@@ -1,0 +1,279 @@
+"""Main ComfyUI node: VideoActorExtractor.
+
+Detects, tracks, identifies, and extracts individual actors from video
+with green screen background output.
+"""
+
+import os
+import sys
+import json
+import numpy as np
+from typing import Tuple, List, Dict
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.video_reader import get_video_info, extract_frames
+from core.config import (
+    DEFAULT_MAX_ACTORS,
+    DEFAULT_FACE_THRESHOLD,
+    DEFAULT_FPS_SAMPLE,
+    DEFAULT_MIN_TRACK_LENGTH,
+    GREEN_SCREEN_COLOR,
+    SEGMENT_GAP_SEC,
+)
+from pipeline.detector import PersonDetector, BoundingBox
+from pipeline.tracker import PersonTracker
+from pipeline.identity import IdentityCluster
+from pipeline.cropper import ActorCropper
+from pipeline.merger import merge_segments, generate_actor_json
+
+
+def _get_comfyui_output_dir() -> str:
+    """Get ComfyUI output directory."""
+    try:
+        import folder_paths
+        base = folder_paths.get_output_directory()
+    except ImportError:
+        # Fallback for testing outside ComfyUI
+        base = os.path.join(os.path.expanduser("~"), "output")
+    
+    output_dir = os.path.join(base, "ComfyUI-VideoActorExtract")
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir
+
+
+class VideoActorExtractor:
+    """
+    Main extraction pipeline node for ComfyUI.
+    
+    Input:
+        - video_path: path to input video
+        - max_actors: maximum number of actors to detect
+        - face_threshold: face similarity threshold for identity merging
+        - fps_sample: frames per second to sample for processing
+        - min_track_length: minimum number of frames for a valid track
+    
+    Output:
+        - actor_info_json: JSON string with actor information
+        - output_dir: path to output directory containing per-actor MP4s
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "video_path": ("STRING", {"default": "", "multiline": False}),
+            },
+            "optional": {
+                "max_actors": ("INT", {"default": DEFAULT_MAX_ACTORS, "min": 1, "max": 50}),
+                "face_threshold": ("FLOAT", {"default": DEFAULT_FACE_THRESHOLD, "min": 0.1, "max": 0.99, "step": 0.05}),
+                "fps_sample": ("INT", {"default": DEFAULT_FPS_SAMPLE, "min": 1, "max": 30}),
+                "min_track_length": ("INT", {"default": DEFAULT_MIN_TRACK_LENGTH, "min": 1, "max": 100}),
+            }
+        }
+    
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("actor_info_json", "output_dir")
+    FUNCTION = "extract"
+    CATEGORY = "video/actor"
+    
+    def extract(
+        self,
+        video_path: str,
+        max_actors: int = DEFAULT_MAX_ACTORS,
+        face_threshold: float = DEFAULT_FACE_THRESHOLD,
+        fps_sample: int = DEFAULT_FPS_SAMPLE,
+        min_track_length: int = DEFAULT_MIN_TRACK_LENGTH,
+    ) -> Tuple[str, str]:
+        """Run the full actor extraction pipeline."""
+        
+        # Validate input
+        if not video_path or not os.path.exists(video_path):
+            raise ValueError(f"Video file not found: {video_path}")
+        
+        output_dir = _get_comfyui_output_dir()
+        print(f"[VideoActorExtract] Output directory: {output_dir}")
+        
+        # Step 1: Read video info
+        print("[VideoActorExtract] Step 1: Reading video info...")
+        video_info = get_video_info(video_path)
+        print(f"  Total frames: {video_info.total_frames}, "
+              f"FPS: {video_info.fps}, "
+              f"Resolution: {video_info.width}x{video_info.height}, "
+              f"Duration: {video_info.duration_sec:.1f}s")
+        
+        # Step 2: Extract sampled frames
+        print(f"[VideoActorExtract] Step 2: Extracting frames at {fps_sample} fps...")
+        frames, frame_indices = extract_frames(video_path, fps_sample=fps_sample)
+        print(f"  Extracted {len(frames)} frames")
+        
+        if len(frames) == 0:
+            raise ValueError("No frames could be extracted from the video.")
+        
+        # Build a frame lookup dict for identity extraction
+        # frame_idx_in_video -> numpy_frame
+        frame_lookup = {}
+        for i, orig_idx in enumerate(frame_indices):
+            frame_lookup[orig_idx] = frames[i]
+        
+        # Step 3: Detect persons
+        print("[VideoActorExtract] Step 3: Running person detection...")
+        detector = PersonDetector()
+        all_bboxes = detector.detect_batch(frames)
+        
+        total_detections = sum(len(b) for b in all_bboxes)
+        print(f"  Total detections: {total_detections} across {len(frames)} frames")
+        
+        # Step 4: Track persons
+        print("[VideoActorExtract] Step 4: Running multi-object tracking...")
+        tracker = PersonTracker(fps=float(fps_sample))
+        
+        for i, bboxes in enumerate(all_bboxes):
+            orig_frame_idx = frame_indices[i]
+            tracker.update(bboxes, orig_frame_idx)
+        
+        track_records = tracker.finish()
+        
+        # Filter short tracks
+        long_tracks = {
+            tid: recs for tid, recs in track_records.items()
+            if len(recs) >= min_track_length
+        }
+        print(f"  Found {len(track_records)} tracks, {len(long_tracks)} with >= {min_track_length} frames")
+        
+        if not long_tracks:
+            # No actors found, return empty result
+            empty_json = json.dumps({
+                "actors": [],
+                "video_info": {
+                    "total_frames": video_info.total_frames,
+                    "fps": video_info.fps,
+                    "width": video_info.width,
+                    "height": video_info.height,
+                    "duration_sec": video_info.duration_sec,
+                }
+            }, indent=2)
+            return (empty_json, output_dir)
+        
+        # Step 5: Identity clustering
+        print("[VideoActorExtract] Step 5: Clustering actor identities...")
+        identity = IdentityCluster(threshold=face_threshold)
+        track_to_actor = identity.cluster_tracks(long_tracks, frame_lookup, min_track_length)
+        
+        # Group tracks by actor
+        actor_tracks: Dict[str, List[int]] = {}
+        for tid, actor_id in track_to_actor.items():
+            if actor_id not in actor_tracks:
+                actor_tracks[actor_id] = []
+            actor_tracks[actor_id].append(tid)
+        
+        # Limit number of actors
+        actor_ids_sorted = sorted(actor_tracks.keys())[:max_actors]
+        print(f"  Identified {len(actor_ids_sorted)} actors (max: {max_actors})")
+        
+        # Step 6: Crop actors and create segments
+        print("[VideoActorExtract] Step 6: Cropping actors with green screen...")
+        cropper = ActorCropper()
+        
+        # Compute uniform output size
+        all_actor_records = []
+        for actor_id in actor_ids_sorted:
+            for tid in actor_tracks[actor_id]:
+                all_actor_records.append(long_tracks[tid])
+        
+        output_size = ActorCropper.compute_output_size(
+            all_actor_records, video_info.height, video_info.width
+        )
+        print(f"  Output size: {output_size[0]}x{output_size[1]}")
+        
+        # Step 7: Generate output per actor
+        print("[VideoActorExtract] Step 7: Generating output videos and JSON...")
+        video_info_dict = {
+            "total_frames": video_info.total_frames,
+            "fps": video_info.fps,
+            "width": video_info.width,
+            "height": video_info.height,
+            "duration_sec": video_info.duration_sec,
+        }
+        actor_data_for_json = {}
+        
+        for actor_id in actor_ids_sorted:
+            tids = actor_tracks[actor_id]
+            
+            # Merge all track records for this actor
+            # Sort by frame index to create continuous segments
+            all_recs = []
+            for tid in tids:
+                all_recs.extend(long_tracks[tid])
+            all_recs.sort(key=lambda r: r.frame_idx)
+            
+            # Split into segments (continuous sequences)
+            segments_recs = []
+            current_segment = [all_recs[0]]
+            
+            for i in range(1, len(all_recs)):
+                # If gap between frames > 2 * sample interval, new segment
+                if all_recs[i].frame_idx - all_recs[i - 1].frame_idx > 2 * (video_info.fps / fps_sample):
+                    segments_recs.append(current_segment)
+                    current_segment = []
+                current_segment.append(all_recs[i])
+            segments_recs.append(current_segment)
+            
+            # Crop each segment
+            actor_segments_frames = []
+            actor_segments_info = []
+            
+            for seg_recs in segments_recs:
+                seg_frames = cropper.crop_segment_from_dict(
+                    frame_lookup, seg_recs, output_size=output_size
+                )
+                if seg_frames:
+                    actor_segments_frames.append(seg_frames)
+                    actor_segments_info.append({
+                        "start_frame": seg_recs[0].frame_idx,
+                        "end_frame": seg_recs[-1].frame_idx,
+                        "frame_count": len(seg_recs),
+                    })
+            
+            if not actor_segments_frames:
+                continue
+            
+            # Encode to video
+            output_video_path = os.path.join(output_dir, f"{actor_id}.mp4")
+            success = merge_segments(
+                actor_segments_frames,
+                fps=video_info.fps,
+                output_path=output_video_path,
+                gap_sec=SEGMENT_GAP_SEC,
+            )
+            
+            if success:
+                print(f"  {actor_id}: {len(segments_recs)} segments, "
+                      f"{sum(s['frame_count'] for s in actor_segments_info)} frames -> {output_video_path}")
+            
+            actor_data_for_json[actor_id] = {
+                "segments": actor_segments_info,
+                "total_frames": sum(s["frame_count"] for s in actor_segments_info),
+                "segment_count": len(actor_segments_info),
+            }
+        
+        # Generate JSON
+        json_path = os.path.join(output_dir, "actor_info.json")
+        generate_actor_json(actor_data_for_json, video_info_dict, json_path)
+        
+        with open(json_path, "r") as f:
+            json_content = f.read()
+        
+        print(f"[VideoActorExtract] Done! Output in {output_dir}")
+        return (json_content, output_dir)
+
+
+# ComfyUI node registration
+NODE_CLASS_MAPPINGS = {
+    "VideoActorExtractor": VideoActorExtractor,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "VideoActorExtractor": "Video Actor Extract",
+}
