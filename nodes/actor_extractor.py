@@ -66,6 +66,7 @@ class VideoActorExtractor:
                 "video_path": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
+                "model_path": ("STRING", {"default": "yolov8n.pt", "multiline": False}),
                 "max_actors": ("INT", {"default": DEFAULT_MAX_ACTORS, "min": 1, "max": 50}),
                 "face_threshold": ("FLOAT", {"default": DEFAULT_FACE_THRESHOLD, "min": 0.1, "max": 0.99, "step": 0.05}),
                 "fps_sample": ("INT", {"default": DEFAULT_FPS_SAMPLE, "min": 1, "max": 30}),
@@ -81,6 +82,7 @@ class VideoActorExtractor:
     def extract(
         self,
         video_path: str,
+        model_path: str = DEFAULT_YOLO_MODEL,
         max_actors: int = DEFAULT_MAX_ACTORS,
         face_threshold: float = DEFAULT_FACE_THRESHOLD,
         fps_sample: int = DEFAULT_FPS_SAMPLE,
@@ -118,8 +120,8 @@ class VideoActorExtractor:
             frame_lookup[orig_idx] = frames[i]
         
         # Step 3: Detect persons
-        print("[VideoActorExtract] Step 3: Running person detection...")
-        detector = PersonDetector()
+        print(f"[VideoActorExtract] Step 3: Running person detection (model: {model_path})...")
+        detector = PersonDetector(model=model_path)
         all_bboxes = detector.detect_batch(frames)
         
         total_detections = sum(len(b) for b in all_bboxes)
