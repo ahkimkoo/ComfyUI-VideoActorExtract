@@ -1,0 +1,10 @@
+[project]
+name = "ComfyUI-VideoActorExtract"
+version = "0.1.0"
+description = "Extract individual actors from video with green screen background"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+
+[project.optional-dependencies]
+dev = ["pytest"]
