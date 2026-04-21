@@ -123,13 +123,11 @@ class VideoActorExtractor:
         else:
             imgs_np = np.array(images)
         
-        # Squeeze batch dimension if present
-        if imgs_np.ndim == 4:
-            imgs_np = imgs_np.squeeze(0)  # [B, H, W, C] -> [B, H, W, C] if B=1
-            if imgs_np.ndim == 3:
-                imgs_np = imgs_np[np.newaxis, ...]
-        elif imgs_np.ndim == 3:
+        # Ensure 4D: [B, H, W, C]
+        # VHS LoadVideo IMAGE tensor is already [B, H, W, C] format
+        if imgs_np.ndim == 3:
             imgs_np = imgs_np[np.newaxis, ...]
+        # If already 4D, use as-is (no squeeze needed)
         
         num_frames = imgs_np.shape[0]
         img_h = imgs_np.shape[1]
