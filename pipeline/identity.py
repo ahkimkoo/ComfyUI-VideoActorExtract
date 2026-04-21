@@ -4,6 +4,7 @@ Uses InsightFace for face embedding extraction and cosine similarity
 clustering to merge tracks belonging to the same actor.
 """
 
+import os
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
@@ -28,12 +29,36 @@ class IdentityCluster:
         try:
             import insightface
             from insightface.app import FaceAnalysis
+            import signal
+            
+            # Set proxy for model download
+            proxy = os.environ.get('http_proxy', os.environ.get('HTTP_PROXY', ''))
+            if proxy:
+                os.environ.setdefault('HTTP_PROXY', proxy)
+                os.environ.setdefault('HTTPS_PROXY', proxy)
+            
+            model_dir = os.path.expanduser("~/.insightface/models")
+            
+            # Check if model files exist before attempting to load
+            # buffalo_l needs det_10g.onnx and w600k_r50.onnx
+            required_files = ['1k3d68.onnx', '2d106det.onnx', 'det_10g.onnx', 'genderage.onnx', 'w600k_mbf.onnx', 'w600k_r50.onnx']
+            model_path = os.path.join(model_dir, "buffalo_l")
+            has_all = all(os.path.exists(os.path.join(model_path, f)) for f in required_files)
+            
+            if not has_all:
+                print("[Identity] InsightFace buffalo_l model not found locally, skipping face clustering")
+                print("[Identity] Run: python -c \"from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l').prepare(ctx_id=-1)\"")
+                print("[Identity] to download the model (~350MB)")
+                self._loaded = False
+                self.model = None
+                return
             
             self.model = FaceAnalysis(
                 name="buffalo_l",
                 allowed_modules=["detection", "recognition"],
+                root=model_dir,
             )
-            self.model.prepare(ctx_id=0, det_size=(640, 640))
+            self.model.prepare(ctx_id=-1, det_size=(640, 640))  # ctx_id=-1 for CPU
             self._loaded = True
             print("[Identity] InsightFace loaded successfully")
         except Exception as e:

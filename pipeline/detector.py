@@ -119,39 +119,20 @@ class PersonDetector:
     
     def detect_batch(self, frames: np.ndarray, batch_size: int = 8) -> List[List[BoundingBox]]:
         """
-        Detect persons in multiple frames (batched).
+        Detect persons in multiple frames.
         
         Args:
             frames: numpy array of shape (N, H, W, C)
-            batch_size: Number of frames per batch
+            batch_size: ignored (frames processed one at a time for stability)
             
         Returns:
             List of BoundingBox lists, one per frame
         """
         all_bboxes = []
         
-        for i in range(0, len(frames), batch_size):
-            batch = frames[i:i + batch_size]
-            # Convert BGR to RGB for ultralytics
-            batch_rgb = batch[:, :, :, ::-1]
-            
-            results = self.model(
-                batch_rgb,
-                classes=[0],
-                conf=self.conf_threshold,
-                iou=self.iou_threshold,
-                verbose=False,
-                device=self.device,
-            )
-            
-            for result in results:
-                bboxes = []
-                boxes = result.boxes
-                if boxes is not None:
-                    for box in boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        conf = float(box.conf[0].cpu().numpy())
-                        bboxes.append(BoundingBox(x1, y1, x2, y2, conf))
-                all_bboxes.append(bboxes)
+        for i in range(len(frames)):
+            frame = frames[i]
+            bboxes = self.detect(frame)
+            all_bboxes.append(bboxes)
         
         return all_bboxes
