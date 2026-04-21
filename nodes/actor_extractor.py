@@ -2,13 +2,18 @@
 
 Detects, tracks, identifies, and extracts individual actors from video
 with green screen background output.
+
+Supports two input modes:
+  1. IMAGE batch from VHS LoadVideo node (preferred)
+  2. video_path string (fallback, for direct file input)
 """
 
 import os
 import sys
 import json
+import torch
 import numpy as np
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -64,13 +69,13 @@ class VideoActorExtractor:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "video_path": ("STRING", {"default": "", "multiline": False}),
+                "images": ("IMAGE",),
             },
             "optional": {
                 "model_path": ("STRING", {"default": "yolov8n.pt", "multiline": False}),
+                "video_path": ("STRING", {"default": "", "multiline": False, "tooltip": "Optional: original video path for metadata. If empty, metadata is estimated."}),
                 "max_actors": ("INT", {"default": DEFAULT_MAX_ACTORS, "min": 1, "max": 50}),
                 "face_threshold": ("FLOAT", {"default": DEFAULT_FACE_THRESHOLD, "min": 0.1, "max": 0.99, "step": 0.05}),
-                "fps_sample": ("INT", {"default": DEFAULT_FPS_SAMPLE, "min": 1, "max": 30}),
                 "min_track_length": ("INT", {"default": DEFAULT_MIN_TRACK_LENGTH, "min": 1, "max": 100}),
             }
         }
@@ -82,59 +87,100 @@ class VideoActorExtractor:
     
     def extract(
         self,
-        video_path: str,
+        images: torch.Tensor,
         model_path: str = DEFAULT_YOLO_MODEL,
+        video_path: str = "",
         max_actors: int = DEFAULT_MAX_ACTORS,
         face_threshold: float = DEFAULT_FACE_THRESHOLD,
-        fps_sample: int = DEFAULT_FPS_SAMPLE,
         min_track_length: int = DEFAULT_MIN_TRACK_LENGTH,
     ) -> Tuple[str, str]:
-        """Run the full actor extraction pipeline."""
+        """
+        Run the full actor extraction pipeline.
         
-        # Validate input
-        if not video_path or not os.path.exists(video_path):
-            raise ValueError(f"Video file not found: {video_path}")
+        Args:
+            images: IMAGE tensor from VHS LoadVideo, shape [B, H, W, C], RGB, 0-1
+            model_path: YOLOv8 model path
+            video_path: Optional original video path for metadata
+            max_actors: Maximum number of actors to detect
+            face_threshold: Face similarity threshold for identity merging
+            min_track_length: Minimum number of frames for a valid track
+            
+        Returns:
+            (actor_info_json, output_dir)
+        """
         
         output_dir = _get_comfyui_output_dir()
         print(f"[VideoActorExtract] Output directory: {output_dir}")
         
-        # Step 1: Read video info
-        print("[VideoActorExtract] Step 1: Reading video info...")
-        video_info = get_video_info(video_path)
-        print(f"  Total frames: {video_info.total_frames}, "
-              f"FPS: {video_info.fps}, "
-              f"Resolution: {video_info.width}x{video_info.height}, "
-              f"Duration: {video_info.duration_sec:.1f}s")
+        # Convert IMAGE tensor to numpy frames (RGB 0-1 -> BGR 0-255)
+        # images shape: [B, H, W, C]
+        print(f"[VideoActorExtract] Received IMAGE batch: {images.shape}")
         
-        # Step 2: Extract sampled frames
-        print(f"[VideoActorExtract] Step 2: Extracting frames at {fps_sample} fps...")
-        frames, frame_indices = extract_frames(video_path, fps_sample=fps_sample)
-        print(f"  Extracted {len(frames)} frames")
+        # Handle different tensor types
+        if isinstance(images, torch.Tensor):
+            # Convert to numpy, squeeze if needed
+            imgs_np = images.cpu().numpy()
+        else:
+            imgs_np = np.array(images)
         
-        if len(frames) == 0:
-            raise ValueError("No frames could be extracted from the video.")
+        # Squeeze batch dimension if present
+        if imgs_np.ndim == 4:
+            imgs_np = imgs_np.squeeze(0)  # [B, H, W, C] -> [B, H, W, C] if B=1
+            if imgs_np.ndim == 3:
+                imgs_np = imgs_np[np.newaxis, ...]
+        elif imgs_np.ndim == 3:
+            imgs_np = imgs_np[np.newaxis, ...]
         
-        # Build a frame lookup dict for identity extraction
-        # frame_idx_in_video -> numpy_frame
-        frame_lookup = {}
-        for i, orig_idx in enumerate(frame_indices):
-            frame_lookup[orig_idx] = frames[i]
+        num_frames = imgs_np.shape[0]
+        img_h = imgs_np.shape[1]
+        img_w = imgs_np.shape[2]
         
-        # Step 3: Detect persons
-        print(f"[VideoActorExtract] Step 3: Running person detection (model: {model_path})...")
+        print(f"  Total frames: {num_frames}, Resolution: {img_w}x{img_h}")
+        
+        # Convert RGB (0-1) to BGR (0-255)
+        frames = np.clip(imgs_np * 255.0, 0, 255).astype(np.uint8)
+        # RGB -> BGR
+        frames = frames[:, :, :, ::-1].copy()
+        
+        # Build frame lookup
+        frame_lookup = {i: frames[i] for i in range(num_frames)}
+        
+        # Estimate video metadata if no video_path provided
+        if video_path and os.path.exists(video_path):
+            from core.video_reader import get_video_info
+            try:
+                video_info = get_video_info(video_path)
+                fps = video_info.fps
+                total_frames = video_info.total_frames
+                orig_width = video_info.width
+                orig_height = video_info.height
+            except Exception:
+                fps = 30.0
+                total_frames = num_frames
+                orig_width = img_w
+                orig_height = img_h
+        else:
+            fps = 30.0
+            total_frames = num_frames
+            orig_width = img_w
+            orig_height = img_h
+        
+        print(f"  Estimated FPS: {fps}, Total frames: {total_frames}")
+        
+        # Step 3: Detect persons (process all frames since we already have them)
+        print(f"[VideoActorExtract] Step 2: Running person detection...")
         detector = PersonDetector(model=model_path)
         all_bboxes = detector.detect_batch(frames)
         
         total_detections = sum(len(b) for b in all_bboxes)
-        print(f"  Total detections: {total_detections} across {len(frames)} frames")
+        print(f"  Total detections: {total_detections} across {num_frames} frames")
         
         # Step 4: Track persons
-        print("[VideoActorExtract] Step 4: Running multi-object tracking...")
-        tracker = PersonTracker(fps=float(fps_sample))
+        print("[VideoActorExtract] Step 3: Running multi-object tracking...")
+        tracker = PersonTracker(fps=fps)
         
         for i, bboxes in enumerate(all_bboxes):
-            orig_frame_idx = frame_indices[i]
-            tracker.update(bboxes, orig_frame_idx)
+            tracker.update(bboxes, i)
         
         track_records = tracker.finish()
         
@@ -150,17 +196,17 @@ class VideoActorExtractor:
             empty_json = json.dumps({
                 "actors": [],
                 "video_info": {
-                    "total_frames": video_info.total_frames,
-                    "fps": video_info.fps,
-                    "width": video_info.width,
-                    "height": video_info.height,
-                    "duration_sec": video_info.duration_sec,
+                    "total_frames": total_frames,
+                    "fps": fps,
+                    "width": orig_width,
+                    "height": orig_height,
+                    "duration_sec": total_frames / fps if fps > 0 else 0,
                 }
             }, indent=2)
             return (empty_json, output_dir)
         
         # Step 5: Identity clustering
-        print("[VideoActorExtract] Step 5: Clustering actor identities...")
+        print("[VideoActorExtract] Step 4: Clustering actor identities...")
         identity = IdentityCluster(threshold=face_threshold)
         track_to_actor = identity.cluster_tracks(long_tracks, frame_lookup, min_track_length)
         
@@ -176,7 +222,7 @@ class VideoActorExtractor:
         print(f"  Identified {len(actor_ids_sorted)} actors (max: {max_actors})")
         
         # Step 6: Crop actors and create segments
-        print("[VideoActorExtract] Step 6: Cropping actors with green screen...")
+        print("[VideoActorExtract] Step 5: Cropping actors with green screen...")
         cropper = ActorCropper()
         
         # Compute uniform output size
@@ -186,18 +232,18 @@ class VideoActorExtractor:
                 all_actor_records.append(long_tracks[tid])
         
         output_size = ActorCropper.compute_output_size(
-            all_actor_records, video_info.height, video_info.width
+            all_actor_records, orig_height, orig_width
         )
         print(f"  Output size: {output_size[0]}x{output_size[1]}")
         
         # Step 7: Generate output per actor
-        print("[VideoActorExtract] Step 7: Generating output videos and JSON...")
+        print("[VideoActorExtract] Step 6: Generating output videos and JSON...")
         video_info_dict = {
-            "total_frames": video_info.total_frames,
-            "fps": video_info.fps,
-            "width": video_info.width,
-            "height": video_info.height,
-            "duration_sec": video_info.duration_sec,
+            "total_frames": total_frames,
+            "fps": fps,
+            "width": orig_width,
+            "height": orig_height,
+            "duration_sec": total_frames / fps if fps > 0 else 0,
         }
         actor_data_for_json = {}
         
@@ -205,19 +251,19 @@ class VideoActorExtractor:
             tids = actor_tracks[actor_id]
             
             # Merge all track records for this actor
-            # Sort by frame index to create continuous segments
             all_recs = []
             for tid in tids:
                 all_recs.extend(long_tracks[tid])
             all_recs.sort(key=lambda r: r.frame_idx)
             
             # Split into segments (continuous sequences)
+            # Since we process every frame, a gap of > 30 frames means the person left the scene
             segments_recs = []
             current_segment = [all_recs[0]]
             
             for i in range(1, len(all_recs)):
-                # If gap between frames > 2 * sample interval, new segment
-                if all_recs[i].frame_idx - all_recs[i - 1].frame_idx > 2 * (video_info.fps / fps_sample):
+                gap = all_recs[i].frame_idx - all_recs[i - 1].frame_idx
+                if gap > 30:  # ~1 second gap at 30fps means new segment
                     segments_recs.append(current_segment)
                     current_segment = []
                 current_segment.append(all_recs[i])
@@ -246,7 +292,7 @@ class VideoActorExtractor:
             output_video_path = os.path.join(output_dir, f"{actor_id}.mp4")
             success = merge_segments(
                 actor_segments_frames,
-                fps=video_info.fps,
+                fps=fps,
                 output_path=output_video_path,
                 gap_sec=SEGMENT_GAP_SEC,
             )
