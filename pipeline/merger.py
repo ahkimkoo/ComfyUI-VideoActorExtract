@@ -106,13 +106,13 @@ def merge_segments(
     gap_sec: float = SEGMENT_GAP_SEC,
 ) -> bool:
     """
-    Merge multiple segments into one video, with green screen gaps between them.
+    Merge multiple segments into one video.
     
     Args:
         segments: List of frame lists, each list is one continuous segment
         fps: Frame rate
         output_path: Output MP4 path
-        gap_sec: Duration of green screen gap between segments in seconds
+        gap_sec: (kept for API compatibility, no longer inserts green gaps)
         
     Returns:
         True on success
@@ -126,22 +126,14 @@ def merge_segments(
         return False
     
     if len(segments) == 1:
-        # Single segment, just encode it
         return _encode_frames_to_temp(segments[0], output_path, fps)
     
-    # Get dimensions from first frame
-    h, w = segments[0][0].shape[:2]
-    gap_frames = max(1, int(fps * gap_sec))
-    
-    # Build merged frame list
+    # Concatenate all segments without gaps
     merged = []
-    for i, seg in enumerate(segments):
+    for seg in segments:
         merged.extend(seg)
-        if i < len(segments) - 1:
-            merged.extend(_create_green_frames(gap_frames, w, h))
     
     return _encode_frames_to_temp(merged, output_path, fps)
-
 
 def generate_actor_json(
     actor_data: Dict[str, dict],

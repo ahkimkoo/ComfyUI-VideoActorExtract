@@ -32,6 +32,7 @@ vae_tracker = _load_module("vae_tracker", os.path.join(plugin_dir, "pipeline", "
 vae_identity = _load_module("vae_identity", os.path.join(plugin_dir, "pipeline", "identity.py"))
 vae_cropper = _load_module("vae_cropper", os.path.join(plugin_dir, "pipeline", "cropper.py"))
 vae_merger = _load_module("vae_merger", os.path.join(plugin_dir, "pipeline", "merger.py"))
+vae_segmenter = _load_module("vae_segmenter", os.path.join(plugin_dir, "pipeline", "segmenter.py"))
 
 # Load main node
 vae_actor_extractor = _load_module("vae_actor_extractor", os.path.join(plugin_dir, "nodes", "actor_extractor.py"))

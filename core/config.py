@@ -2,6 +2,8 @@
 
 # Default YOLOv8 model
 DEFAULT_YOLO_MODEL = "yolov8n.pt"
+# Default segmentation model
+DEFAULT_SEG_MODEL = "yolov8n-seg.pt"
 DEFAULT_CONF_THRESHOLD = 0.25
 DEFAULT_IOU_THRESHOLD = 0.45
 
