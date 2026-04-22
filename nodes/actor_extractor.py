@@ -11,6 +11,8 @@ Supports two input modes:
 import os
 import sys
 import json
+import uuid
+
 import torch
 import numpy as np
 from typing import Tuple, List, Dict, Optional
@@ -112,7 +114,7 @@ def apply_bbox_green(frame: np.ndarray, rec: FrameRecord) -> np.ndarray:
 
 
 def _get_comfyui_output_dir() -> str:
-    """Get ComfyUI output directory."""
+    """Get a unique ComfyUI output directory for this run."""
     try:
         import folder_paths
 
@@ -121,7 +123,8 @@ def _get_comfyui_output_dir() -> str:
         # Fallback for testing outside ComfyUI
         base = os.path.join(os.path.expanduser("~"), "output")
 
-    output_dir = os.path.join(base, "ComfyUI-VideoActorExtract")
+    run_id = uuid.uuid4().hex[:8]
+    output_dir = os.path.join(base, "ComfyUI-VideoActorExtract", run_id)
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
 
