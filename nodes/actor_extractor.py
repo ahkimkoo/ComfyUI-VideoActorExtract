@@ -18,6 +18,7 @@ Supports two input modes:
 import os
 import sys
 import json
+import time
 import uuid
 
 import torch
@@ -352,31 +353,64 @@ class VideoActorExtractor:
         print(f"[VideoActorExtract] Resolved seg_model_path: {seg_model_path}")
 
         # ----------------------------------------------------------------
-        # Convert IMAGE tensor to numpy frames (RGB 0-1 -> BGR 0-255)
+        # Determine frame dimensions from IMAGE tensor (no bulk conversion)
         # ----------------------------------------------------------------
         print(f"[VideoActorExtract] Received IMAGE batch: {images.shape}")
 
+        # images shape: [B, H, W, C] or [H, W, C], RGB float32 0-1
         if isinstance(images, torch.Tensor):
-            imgs_np = images.cpu().numpy()
+            _sample = images[0] if images.ndim == 4 else images
+            img_h = _sample.shape[0]
+            img_w = _sample.shape[1]
         else:
-            imgs_np = np.array(images)
+            arr = np.array(images)
+            if arr.ndim == 3:
+                img_h, img_w = arr.shape[0], arr.shape[1]
+            else:
+                img_h, img_w = arr.shape[1], arr.shape[2]
 
-        # Ensure 4D: [B, H, W, C]
-        if imgs_np.ndim == 3:
-            imgs_np = imgs_np[np.newaxis, ...]
-
-        num_frames = imgs_np.shape[0]
-        img_h = imgs_np.shape[1]
-        img_w = imgs_np.shape[2]
+        num_frames = images.shape[0] if images.ndim == 4 else 1
 
         print(f"  Total frames: {num_frames}, Resolution: {img_w}x{img_h}")
 
-        # Convert RGB (0-1) to BGR (0-255)
-        frames = np.clip(imgs_np * 255.0, 0, 255).astype(np.uint8)
-        frames = frames[:, :, :, ::-1].copy()  # RGB -> BGR
+        # ----------------------------------------------------------------
+        # Lazy frame getter: converts ONE frame at a time (~6MB each)
+        # ----------------------------------------------------------------
+        def _get_frame_bgr(idx: int) -> np.ndarray:
+            """Convert a single frame from tensor to BGR uint8 numpy array."""
+            frame_rgb = images[idx].cpu().numpy()  # (H, W, 3) float32, ~6MB
+            return (frame_rgb * 255.0).clip(0, 255).astype(np.uint8)[:, :, ::-1].copy()
 
-        # Build frame lookup
-        frame_lookup = {i: frames[i] for i in range(num_frames)}
+        # frame_lookup as a lazy dict — IdentityCluster.cluster_tracks uses .get()
+        class _LazyFrameLookup(dict):
+            """Dict-like that converts frames on-demand instead of bulk."""
+
+            def __init__(self, n: int):
+                super().__init__()
+                self._n = n
+                self._cache: Dict[int, np.ndarray] = {}
+
+            def __getitem__(self, key: int) -> np.ndarray:
+                if key not in self._cache:
+                    self._cache[key] = _get_frame_bgr(key)
+                return self._cache[key]
+
+            def get(self, key: int, default=None):
+                try:
+                    return self[key]
+                except (IndexError, KeyError):
+                    return default
+
+            def __contains__(self, key):
+                return 0 <= key < self._n
+
+            def __len__(self):
+                return self._n
+
+            def __iter__(self):
+                return iter(range(self._n))
+
+        frame_lookup = _LazyFrameLookup(num_frames)
 
         # ----------------------------------------------------------------
         # Estimate video metadata
@@ -438,13 +472,22 @@ class VideoActorExtractor:
         # Step 3: Process all frames — detect masks and track them
         # ----------------------------------------------------------------
         print("[VideoActorExtract] Step 3: Detecting masks and tracking actors...")
+        t0 = time.time()
         for frame_idx in range(num_frames):
-            frame = frames[frame_idx]
-            masks = segmenter.detect_masks(frame)
-            mask_tracker.update(frame_idx, masks, frame, segmenter)
+            frame_bgr = _get_frame_bgr(frame_idx)  # ~6MB per frame
+            masks = segmenter.detect_masks(frame_bgr)
+            mask_tracker.update(frame_idx, masks, frame_bgr, segmenter)
 
             if (frame_idx + 1) % 50 == 0 or frame_idx == num_frames - 1:
-                print(f"  Processed {frame_idx + 1}/{num_frames} frames")
+                elapsed = time.time() - t0
+                rate = (frame_idx + 1) / elapsed if elapsed > 0 else 0
+                print(
+                    f"  Processed {frame_idx + 1}/{num_frames} frames "
+                    f"({elapsed:.1f}s, {rate:.1f} fps)"
+                )
+
+        elapsed_total = time.time() - t0
+        print(f"  Frame processing complete in {elapsed_total:.1f}s")
 
         # ----------------------------------------------------------------
         # Step 4: Finish tracking, get all MaskActors
