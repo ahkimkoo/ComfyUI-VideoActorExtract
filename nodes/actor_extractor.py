@@ -76,6 +76,41 @@ def _get_comfyui_output_dir() -> str:
     return output_dir
 
 
+def _resolve_model_path(name: str) -> str:
+    """Resolve a model filename to an absolute path.
+
+    Resolution order:
+    1. If already an absolute path and file exists, return as-is.
+    2. Try ComfyUI folder_paths "video-actor-extract" folder.
+    3. Try ~/App/ComfyUI/models/video-actor-extract/.
+    4. Return the bare name (backward compat / let ultralytics download it).
+    """
+    # Already absolute and exists?
+    if os.path.isabs(name) and os.path.isfile(name):
+        return name
+
+    # 1. Try ComfyUI folder_paths
+    try:
+        import folder_paths
+
+        paths = folder_paths.get_folder_paths("video-actor-extract")
+        for p in paths:
+            candidate = os.path.join(p, name)
+            if os.path.isfile(candidate):
+                return candidate
+    except Exception:
+        pass
+
+    # 2. Try default ComfyUI models directory
+    default_dir = os.path.expanduser("~/App/ComfyUI/models/video-actor-extract/")
+    candidate = os.path.join(default_dir, name)
+    if os.path.isfile(candidate):
+        return candidate
+
+    # 3. Return bare name (backward compat)
+    return name
+
+
 def _build_continuous_segments(
     actor_frames: List[Tuple[int, np.ndarray, int]],
     max_gap: int = 30,
@@ -234,7 +269,7 @@ class VideoActorExtractor:
                 "seg_model_path": (
                     "STRING",
                     {
-                        "default": DEFAULT_SEG_MODEL,
+                        "default": "yolov8n-seg.pt",
                         "multiline": False,
                         "tooltip": "YOLOv8-seg model for person segmentation",
                     },
@@ -309,6 +344,12 @@ class VideoActorExtractor:
 
         output_dir = _get_comfyui_output_dir()
         print(f"[VideoActorExtract] Output directory: {output_dir}")
+
+        # Resolve model paths
+        model_path = _resolve_model_path(model_path)
+        seg_model_path = _resolve_model_path(seg_model_path)
+        print(f"[VideoActorExtract] Resolved model_path: {model_path}")
+        print(f"[VideoActorExtract] Resolved seg_model_path: {seg_model_path}")
 
         # ----------------------------------------------------------------
         # Convert IMAGE tensor to numpy frames (RGB 0-1 -> BGR 0-255)
