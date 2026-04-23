@@ -3,6 +3,13 @@
 Detects, tracks, identifies, and extracts individual actors from video
 with green screen background output.
 
+Uses a mask-centric pipeline:
+  1. PersonSegmenter (YOLOv8-seg) detects all person masks per frame
+  2. MaskTracker tracks masks across frames via centroid distance
+  3. IdentityCluster merges mask actors into unique people
+  4. Continuous segments are built with gap interpolation
+  5. Per-actor videos and JSON are generated
+
 Supports two input modes:
   1. IMAGE batch from VHS LoadVideo node (preferred)
   2. video_path string (fallback, for direct file input)
@@ -27,6 +34,7 @@ from core.config import (
     DEFAULT_FPS_SAMPLE,
     DEFAULT_MIN_TRACK_LENGTH,
     DEFAULT_YOLO_MODEL,
+    DEFAULT_MAX_LOST_FRAMES,
     GREEN_SCREEN_COLOR,
     SEGMENT_GAP_SEC,
 )
@@ -48,69 +56,8 @@ try:
 except ImportError:
     PersonSegmenter = None
 
-# Re-import FrameRecord for type hints in helper functions
-from pipeline.tracker import FrameRecord
-
-
-def find_best_mask(
-    rec: FrameRecord, masks: List[Tuple[int, np.ndarray]]
-) -> Optional[np.ndarray]:
-    """Match a FrameRecord bbox to the best mask by centroid proximity.
-
-    Args:
-        rec: FrameRecord with bounding box coordinates.
-        masks: List of (detection_idx, bool_mask_H_W) from PersonSegmenter.
-
-    Returns:
-        The mask with smallest Euclidean distance between bbox center and
-        mask centroid, or None if masks is empty.
-    """
-    if not masks:
-        return None
-
-    cx = (rec.x1 + rec.x2) / 2.0
-    cy = (rec.y1 + rec.y2) / 2.0
-
-    best_mask = None
-    best_dist = float("inf")
-
-    for _, mask in masks:
-        ys, xs = np.where(mask)
-        if len(ys) == 0:
-            continue
-        mask_cx = float(xs.mean())
-        mask_cy = float(ys.mean())
-        dist = ((cx - mask_cx) ** 2 + (cy - mask_cy) ** 2) ** 0.5
-        if dist < best_dist:
-            best_dist = dist
-            best_mask = mask
-
-    return best_mask
-
-
-def apply_bbox_green(frame: np.ndarray, rec: FrameRecord) -> np.ndarray:
-    """Create a green-screened frame keeping only the bbox region original.
-
-    Args:
-        frame: BGR uint8 image.
-        rec: FrameRecord with bounding box coordinates.
-
-    Returns:
-        BGR frame where everything outside the bbox is green (0, 255, 0).
-    """
-    h, w = frame.shape[:2]
-    result = np.full_like(frame, (0, 255, 0), dtype=np.uint8)
-
-    # Clamp bbox to frame boundaries
-    x1 = max(0, int(rec.x1))
-    y1 = max(0, int(rec.y1))
-    x2 = min(w, int(rec.x2))
-    y2 = min(h, int(rec.y2))
-
-    if x2 > x1 and y2 > y1:
-        result[y1:y2, x1:x2] = frame[y1:y2, x1:x2]
-
-    return result
+# MaskTracker — our new centroid-distance mask tracker
+from pipeline.mask_tracker import MaskTracker, MaskActor
 
 
 def _get_comfyui_output_dir() -> str:
@@ -129,15 +76,145 @@ def _get_comfyui_output_dir() -> str:
     return output_dir
 
 
+def _build_continuous_segments(
+    actor_frames: List[Tuple[int, np.ndarray, int]],
+    max_gap: int = 30,
+    interp_gap: int = 2,
+) -> Tuple[List[List[np.ndarray]], List[dict]]:
+    """Build continuous output segments from sparse frame detections.
+
+    For each actor:
+    1. Sort detections by frame_idx.
+    2. Split into segments where gap > max_gap frames.
+    3. Within each segment, interpolate small gaps (≤ interp_gap frames)
+       by duplicating the previous available masked frame.
+    4. Output continuous frame list where frame_count == end_frame - start_frame + 1.
+
+    Args:
+        actor_frames: Sorted list of (frame_idx, masked_frame, mask_area).
+        max_gap: Gap in frames that triggers a new segment.
+        interp_gap: Max gap within a segment to interpolate by duplication.
+
+    Returns:
+        (segments_frames, segments_info) where:
+        - segments_frames: List of frame-lists (one per segment), each containing
+          continuous frames from start_frame to end_frame.
+        - segments_info: List of dicts with start_frame, end_frame, frame_count.
+    """
+    if not actor_frames:
+        return [], []
+
+    # --- Step 1: Group into segments by max_gap ---
+    # Each segment is a list of (frame_idx, masked_frame, area) entries
+    raw_segments: List[List[Tuple[int, np.ndarray, int]]] = []
+    current_seg: List[Tuple[int, np.ndarray, int]] = [actor_frames[0]]
+
+    for i in range(1, len(actor_frames)):
+        gap = actor_frames[i][0] - actor_frames[i - 1][0]
+        if gap > max_gap:
+            raw_segments.append(current_seg)
+            current_seg = []
+        current_seg.append(actor_frames[i])
+    raw_segments.append(current_seg)
+
+    # --- Step 2: Interpolate each segment to be continuous ---
+    segments_frames: List[List[np.ndarray]] = []
+    segments_info: List[dict] = []
+
+    for seg in raw_segments:
+        if not seg:
+            continue
+
+        start_frame = seg[0][0]
+        end_frame = seg[-1][0]
+
+        # Build a lookup: frame_idx -> (masked_frame, area)
+        frame_map: Dict[int, Tuple[np.ndarray, int]] = {
+            entry[0]: (entry[1], entry[2]) for entry in seg
+        }
+
+        # Walk from start_frame to end_frame, interpolating small gaps
+        continuous_frames: List[np.ndarray] = []
+        prev_frame: Optional[np.ndarray] = None
+
+        for fi in range(start_frame, end_frame + 1):
+            if fi in frame_map:
+                masked, _ = frame_map[fi]
+                continuous_frames.append(masked)
+                prev_frame = masked
+            elif prev_frame is not None:
+                # Duplicate the previous frame (gap interpolation)
+                continuous_frames.append(prev_frame.copy())
+            else:
+                # Shouldn't happen (start_frame is always in frame_map),
+                # but fallback to green frame
+                h, w = seg[0][1].shape[:2]
+                green = np.full((h, w, 3), (0, 255, 0), dtype=np.uint8)
+                continuous_frames.append(green)
+                prev_frame = green
+
+        if continuous_frames:
+            segments_frames.append(continuous_frames)
+            segments_info.append(
+                {
+                    "start_frame": start_frame,
+                    "end_frame": end_frame,
+                    "frame_count": end_frame - start_frame + 1,
+                }
+            )
+
+    return segments_frames, segments_info
+
+
+def _actor_to_synthetic_records(
+    actor: MaskActor,
+) -> List:
+    """Build approximate FrameRecord-like objects from a MaskActor's data.
+
+    For identity clustering, we compute an approximate bounding box from
+    the masked frame content (person pixels vs green pixels).
+
+    Args:
+        actor: MaskActor with frames list of (frame_idx, masked_frame, area).
+
+    Returns:
+        List of FrameRecord-like objects for identity clustering.
+    """
+    from pipeline.tracker import FrameRecord
+
+    records = []
+    for frame_idx, masked_frame, area in actor.frames:
+        # Compute bbox from non-green pixels in the masked frame
+        # Green = (0, 255, 0) in BGR
+        non_green = (
+            (masked_frame[:, :, 0] != 0)
+            | (masked_frame[:, :, 1] != 255)
+            | (masked_frame[:, :, 2] != 0)
+        )
+        ys, xs = np.where(non_green)
+        if len(ys) == 0:
+            continue
+        x1, y1, x2, y2 = (
+            float(xs.min()),
+            float(ys.min()),
+            float(xs.max()),
+            float(ys.max()),
+        )
+        records.append(FrameRecord(frame_idx=frame_idx, x1=x1, y1=y1, x2=x2, y2=y2))
+    return records
+
+
 class VideoActorExtractor:
     """
     Main extraction pipeline node for ComfyUI.
 
     Input:
-        - video_path: path to input video
+        - images: IMAGE tensor from VHS LoadVideo
+        - model_path: YOLOv8 detection model path
+        - seg_model_path: YOLOv8-seg model path
+        - video_path: optional original video path for metadata
         - max_actors: maximum number of actors to detect
         - face_threshold: face similarity threshold for identity merging
-        - fps_sample: frames per second to sample for processing
         - min_track_length: minimum number of frames for a valid track
 
     Output:
@@ -208,6 +285,15 @@ class VideoActorExtractor:
         """
         Run the full actor extraction pipeline.
 
+        Pipeline:
+        1. Convert IMAGE tensor to numpy BGR frames
+        2. Initialize PersonSegmenter and MaskTracker
+        3. For each frame: detect masks, pass to MaskTracker
+        4. Finish tracking, get all MaskActors
+        5. Filter short actors, run identity clustering
+        6. Build continuous segments with interpolation
+        7. Encode videos and generate JSON
+
         Args:
             images: IMAGE tensor from VHS LoadVideo, shape [B, H, W, C], RGB, 0-1
             model_path: YOLOv8 model path
@@ -224,22 +310,19 @@ class VideoActorExtractor:
         output_dir = _get_comfyui_output_dir()
         print(f"[VideoActorExtract] Output directory: {output_dir}")
 
+        # ----------------------------------------------------------------
         # Convert IMAGE tensor to numpy frames (RGB 0-1 -> BGR 0-255)
-        # images shape: [B, H, W, C]
+        # ----------------------------------------------------------------
         print(f"[VideoActorExtract] Received IMAGE batch: {images.shape}")
 
-        # Handle different tensor types
         if isinstance(images, torch.Tensor):
-            # Convert to numpy, squeeze if needed
             imgs_np = images.cpu().numpy()
         else:
             imgs_np = np.array(images)
 
         # Ensure 4D: [B, H, W, C]
-        # VHS LoadVideo IMAGE tensor is already [B, H, W, C] format
         if imgs_np.ndim == 3:
             imgs_np = imgs_np[np.newaxis, ...]
-        # If already 4D, use as-is (no squeeze needed)
 
         num_frames = imgs_np.shape[0]
         img_h = imgs_np.shape[1]
@@ -249,16 +332,15 @@ class VideoActorExtractor:
 
         # Convert RGB (0-1) to BGR (0-255)
         frames = np.clip(imgs_np * 255.0, 0, 255).astype(np.uint8)
-        # RGB -> BGR
-        frames = frames[:, :, :, ::-1].copy()
+        frames = frames[:, :, :, ::-1].copy()  # RGB -> BGR
 
         # Build frame lookup
         frame_lookup = {i: frames[i] for i in range(num_frames)}
 
-        # Estimate video metadata if no video_path provided
+        # ----------------------------------------------------------------
+        # Estimate video metadata
+        # ----------------------------------------------------------------
         if video_path and os.path.exists(video_path):
-            from core.video_reader import get_video_info
-
             try:
                 video_info = get_video_info(video_path)
                 fps = video_info.fps
@@ -278,35 +360,12 @@ class VideoActorExtractor:
 
         print(f"  Estimated FPS: {fps}, Total frames: {total_frames}")
 
-        # Step 3: Detect persons (process all frames since we already have them)
-        print(f"[VideoActorExtract] Step 2: Running person detection...")
-        detector = PersonDetector(model=model_path)
-        all_bboxes = detector.detect_batch(frames)
-
-        total_detections = sum(len(b) for b in all_bboxes)
-        print(f"  Total detections: {total_detections} across {num_frames} frames")
-
-        # Step 4: Track persons
-        print("[VideoActorExtract] Step 3: Running multi-object tracking...")
-        tracker = PersonTracker(fps=fps)
-
-        for i, bboxes in enumerate(all_bboxes):
-            tracker.update(bboxes, i)
-
-        track_records = tracker.finish()
-
-        # Filter short tracks
-        long_tracks = {
-            tid: recs
-            for tid, recs in track_records.items()
-            if len(recs) >= min_track_length
-        }
-        print(
-            f"  Found {len(track_records)} tracks, {len(long_tracks)} with >= {min_track_length} frames"
-        )
-
-        if not long_tracks:
-            # No actors found, return empty result with empty preview tensor
+        # ----------------------------------------------------------------
+        # Step 1: Initialize PersonSegmenter
+        # ----------------------------------------------------------------
+        print("[VideoActorExtract] Step 1: Initializing person segmenter...")
+        if PersonSegmenter is None:
+            print("  ERROR: PersonSegmenter not available. Cannot proceed.")
             empty_json = json.dumps(
                 {
                     "actors": [],
@@ -323,68 +382,119 @@ class VideoActorExtractor:
             empty_preview = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
             return (empty_json, output_dir, empty_preview)
 
-        # Step 5: Identity clustering
-        print("[VideoActorExtract] Step 4: Clustering actor identities...")
-        identity = IdentityCluster(threshold=face_threshold)
-        track_to_actor = identity.cluster_tracks(
-            long_tracks, frame_lookup, min_track_length
+        segmenter = PersonSegmenter(model_path=seg_model_path)
+
+        # ----------------------------------------------------------------
+        # Step 2: Initialize MaskTracker
+        # ----------------------------------------------------------------
+        print("[VideoActorExtract] Step 2: Initializing mask tracker...")
+        mask_tracker = MaskTracker(
+            max_lost_frames=DEFAULT_MAX_LOST_FRAMES,
+            match_threshold_px=150.0,
         )
 
-        # Group tracks by actor
-        actor_tracks: Dict[str, List[int]] = {}
-        for tid, actor_id in track_to_actor.items():
-            if actor_id not in actor_tracks:
-                actor_tracks[actor_id] = []
-            actor_tracks[actor_id].append(tid)
-
-        # Limit number of actors
-        actor_ids_sorted = sorted(actor_tracks.keys())[:max_actors]
-        print(f"  Identified {len(actor_ids_sorted)} actors (max: {max_actors})")
-
-        # Step 5: Initialize PersonSegmenter
-        print("[VideoActorExtract] Step 5: Initializing person segmenter...")
-        segmenter = (
-            PersonSegmenter(model_path=seg_model_path) if PersonSegmenter else None
-        )
-        if segmenter is None:
-            print("  PersonSegmenter not available, using bbox green-screen fallback")
-
-        # Step 5.5: Run segmentation on ALL frames, building per-track masked frame collections
-        print(
-            "[VideoActorExtract] Step 5.5: Segmenting frames and building masked tracks..."
-        )
-        track_masked_frames: Dict[int, List[Tuple[int, np.ndarray, int]]] = {
-            tid: [] for tid in long_tracks
-        }
-
+        # ----------------------------------------------------------------
+        # Step 3: Process all frames — detect masks and track them
+        # ----------------------------------------------------------------
+        print("[VideoActorExtract] Step 3: Detecting masks and tracking actors...")
         for frame_idx in range(num_frames):
             frame = frames[frame_idx]
-            masks = segmenter.detect_masks(frame) if segmenter else []
-
-            for tid in long_tracks:
-                matching_recs = [
-                    r for r in long_tracks[tid] if r.frame_idx == frame_idx
-                ]
-                for rec in matching_recs:
-                    if masks:
-                        best_mask = find_best_mask(rec, masks)
-                        if best_mask is not None:
-                            masked = segmenter.apply_mask(frame, best_mask)
-                            area = int(best_mask.sum())
-                        else:
-                            masked = apply_bbox_green(frame, rec)
-                            area = int((rec.x2 - rec.x1) * (rec.y2 - rec.y1))
-                    else:
-                        masked = apply_bbox_green(frame, rec)
-                        area = int((rec.x2 - rec.x1) * (rec.y2 - rec.y1))
-                    track_masked_frames[tid].append((frame_idx, masked, area))
+            masks = segmenter.detect_masks(frame)
+            mask_tracker.update(frame_idx, masks, frame, segmenter)
 
             if (frame_idx + 1) % 50 == 0 or frame_idx == num_frames - 1:
                 print(f"  Processed {frame_idx + 1}/{num_frames} frames")
 
-        # Step 6: Identity clustering (already done above in Step 4)
-        # Collect masked frames per actor from their tracks
-        print("[VideoActorExtract] Step 6: Generating output videos and JSON...")
+        # ----------------------------------------------------------------
+        # Step 4: Finish tracking, get all MaskActors
+        # ----------------------------------------------------------------
+        all_actors = mask_tracker.finish()
+        total_mask_detections = sum(len(a.frames) for a in all_actors.values())
+        print(
+            f"[VideoActorExtract] Step 4: Tracking complete. "
+            f"{len(all_actors)} mask actors, {total_mask_detections} total detections"
+        )
+
+        if not all_actors:
+            print("  No actors found with sufficient detections.")
+            empty_json = json.dumps(
+                {
+                    "actors": [],
+                    "video_info": {
+                        "total_frames": total_frames,
+                        "fps": fps,
+                        "width": orig_width,
+                        "height": orig_height,
+                        "duration_sec": total_frames / fps if fps > 0 else 0,
+                    },
+                },
+                indent=2,
+            )
+            empty_preview = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
+            return (empty_json, output_dir, empty_preview)
+
+        # ----------------------------------------------------------------
+        # Step 5: Filter short actors
+        # ----------------------------------------------------------------
+        long_actors: Dict[int, MaskActor] = {
+            aid: actor
+            for aid, actor in all_actors.items()
+            if len(actor.frames) >= min_track_length
+        }
+        print(
+            f"  {len(long_actors)} actors with >= {min_track_length} frames "
+            f"(filtered out {len(all_actors) - len(long_actors)} short actors)"
+        )
+
+        if not long_actors:
+            empty_json = json.dumps(
+                {
+                    "actors": [],
+                    "video_info": {
+                        "total_frames": total_frames,
+                        "fps": fps,
+                        "width": orig_width,
+                        "height": orig_height,
+                        "duration_sec": total_frames / fps if fps > 0 else 0,
+                    },
+                },
+                indent=2,
+            )
+            empty_preview = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
+            return (empty_json, output_dir, empty_preview)
+
+        # ----------------------------------------------------------------
+        # Step 6: Identity clustering
+        # ----------------------------------------------------------------
+        print("[VideoActorExtract] Step 5: Clustering actor identities...")
+        identity = IdentityCluster(threshold=face_threshold)
+
+        # Build synthetic FrameRecords from mask actors for identity clustering
+        actor_synthetic_records: Dict[int, list] = {}
+        for aid, actor in long_actors.items():
+            actor_synthetic_records[aid] = _actor_to_synthetic_records(actor)
+
+        # Use cluster_tracks with the synthetic records
+        # The identity module expects {track_id: [FrameRecord, ...]}
+        actor_to_identity = identity.cluster_tracks(
+            actor_synthetic_records, frame_lookup, min_track_length
+        )
+
+        # Group mask actors by identity
+        identity_to_actors: Dict[str, List[int]] = {}
+        for aid, actor_id in actor_to_identity.items():
+            if actor_id not in identity_to_actors:
+                identity_to_actors[actor_id] = []
+            identity_to_actors[actor_id].append(aid)
+
+        # Limit number of actors
+        actor_ids_sorted = sorted(identity_to_actors.keys())[:max_actors]
+        print(f"  Identified {len(actor_ids_sorted)} unique actors (max: {max_actors})")
+
+        # ----------------------------------------------------------------
+        # Step 7: Build continuous segments with interpolation
+        # ----------------------------------------------------------------
+        print("[VideoActorExtract] Step 6: Building continuous segments...")
         video_info_dict = {
             "total_frames": total_frames,
             "fps": fps,
@@ -396,18 +506,24 @@ class VideoActorExtractor:
         all_preview_frames: List[np.ndarray] = []
 
         for actor_id in actor_ids_sorted:
-            tids = actor_tracks[actor_id]
-
-            # Collect all (frame_idx, masked_frame, area) from all tracks of this actor
+            # Merge all frames from all mask actors belonging to this identity
             actor_all_frames: List[Tuple[int, np.ndarray, int]] = []
-            for tid in tids:
-                actor_all_frames.extend(track_masked_frames.get(tid, []))
+            for aid in identity_to_actors[actor_id]:
+                actor_all_frames.extend(long_actors[aid].frames)
 
             if not actor_all_frames:
                 continue
 
-            # Sort by frame_idx
-            actor_all_frames.sort(key=lambda x: x[0])
+            # Sort by frame_idx and deduplicate (keep highest area for same frame)
+            frame_best: Dict[int, Tuple[np.ndarray, int]] = {}
+            for fi, masked, area in actor_all_frames:
+                if fi not in frame_best or area > frame_best[fi][1]:
+                    frame_best[fi] = (masked, area)
+
+            actor_all_frames = sorted(
+                [(fi, masked, area) for fi, (masked, area) in frame_best.items()],
+                key=lambda x: x[0],
+            )
 
             # Select top 5 preview frames by mask area (descending)
             top5 = sorted(actor_all_frames, key=lambda x: x[2], reverse=True)[:5]
@@ -417,46 +533,15 @@ class VideoActorExtractor:
                 rgb_float = rgb.astype(np.float32) / 255.0
                 all_preview_frames.append(rgb_float)
 
-            # Split into segments (gap > 30 frames between consecutive frame_idxs)
-            segments_frames: List[List[np.ndarray]] = []
-            current_segment: List[np.ndarray] = [actor_all_frames[0][1]]
-            segments_info = [
-                {
-                    "start_frame": actor_all_frames[0][0],
-                    "end_frame": actor_all_frames[0][0],
-                    "frame_count": 1,
-                }
-            ]
-
-            for i in range(1, len(actor_all_frames)):
-                gap = actor_all_frames[i][0] - actor_all_frames[i - 1][0]
-                if gap > 30:  # ~1 second gap at 30fps means new segment
-                    segments_frames.append(current_segment)
-                    current_segment = []
-                    segments_info.append(
-                        {
-                            "start_frame": actor_all_frames[i][0],
-                            "end_frame": actor_all_frames[i][0],
-                            "frame_count": 0,
-                        }
-                    )
-                current_segment.append(actor_all_frames[i][1])
-                segments_info[-1]["end_frame"] = actor_all_frames[i][0]
-                segments_info[-1]["frame_count"] += 1
-
-            segments_frames.append(current_segment)
-
-            if not segments_frames or not any(segments_frames):
-                continue
-
-            # Filter empty segments
-            segments_frames = [seg for seg in segments_frames if len(seg) > 0]
-            segments_info = [s for s in segments_info if s["frame_count"] > 0]
+            # Build continuous segments with interpolation
+            segments_frames, segments_info = _build_continuous_segments(
+                actor_all_frames, max_gap=30, interp_gap=2
+            )
 
             if not segments_frames:
                 continue
 
-            # Encode to video via merge_segments (no gaps, no green transitions)
+            # Encode to video via merge_segments
             output_video_path = os.path.join(output_dir, f"{actor_id}.mp4")
             success = merge_segments(
                 segments_frames,
@@ -466,9 +551,10 @@ class VideoActorExtractor:
             )
 
             if success:
+                total_output_frames = sum(s["frame_count"] for s in segments_info)
                 print(
-                    f"  {actor_id}: {len(segments_frames)} segments, "
-                    f"{sum(s['frame_count'] for s in segments_info)} frames -> {output_video_path}"
+                    f"  {actor_id}: {len(segments_info)} segments, "
+                    f"{total_output_frames} frames -> {output_video_path}"
                 )
 
             actor_data_for_json[actor_id] = {
@@ -477,13 +563,17 @@ class VideoActorExtractor:
                 "segment_count": len(segments_info),
             }
 
+        # ----------------------------------------------------------------
         # Step 8: Build preview tensor
+        # ----------------------------------------------------------------
         if all_preview_frames:
             preview_tensor = torch.from_numpy(np.stack(all_preview_frames, axis=0))
         else:
             preview_tensor = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
 
-        # Generate JSON
+        # ----------------------------------------------------------------
+        # Step 9: Generate JSON
+        # ----------------------------------------------------------------
         json_path = os.path.join(output_dir, "actor_info.json")
         generate_actor_json(actor_data_for_json, video_info_dict, json_path)
 
