@@ -46,7 +46,6 @@ class IdentityCluster:
                 "2d106det.onnx",
                 "det_10g.onnx",
                 "genderage.onnx",
-                "w600k_mbf.onnx",
                 "w600k_r50.onnx",
             ]
             model_path = os.path.join(model_dir, "buffalo_l")
@@ -249,10 +248,9 @@ class IdentityCluster:
                 actor_id_counter,
             )
         # Renumber actor IDs sequentially
-        actor_map = {
-            aid: idx for idx, aid in enumerate(sorted(set(track_to_actor.values())))
-        }
-        track_to_actor = {tid: f"actor_{v}" for tid, v in actor_map.items()}
+        unique_actors = sorted(set(track_to_actor.values()))
+        actor_map = {aid: idx for idx, aid in enumerate(unique_actors)}
+        track_to_actor = {tid: f"actor_{actor_map[old_name]}" for tid, old_name in track_to_actor.items()}
 
         return track_to_actor
 
