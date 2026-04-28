@@ -42,15 +42,19 @@ class MaskTracker:
     Args:
         max_lost_frames: Close an actor after this many frames without a match.
         match_threshold_px: Maximum centroid distance (pixels) to consider a match.
+        min_mask_area: Minimum mask area (pixels) to consider for tracking.
+            Smaller masks are filtered out as false positives or debris.
     """
 
     def __init__(
         self,
         max_lost_frames: int = 30,
         match_threshold_px: float = 150.0,
+        min_mask_area: int = 20000,
     ):
         self.max_lost_frames = max_lost_frames
         self.match_threshold_px = match_threshold_px
+        self.min_mask_area = min_mask_area
         self._next_actor_id = 0
         self._actors: Dict[int, MaskActor] = {}
 
@@ -110,6 +114,20 @@ class MaskTracker:
             area = int(mask.sum())
             mask_infos.append((mask, centroid, area))
 
+        # Filter out tiny masks (false positives / debris from scene transitions)
+        original_count = len(mask_infos)
+        mask_infos = [
+            (mask, centroid, area)
+            for mask, centroid, area in mask_infos
+            if area >= self.min_mask_area
+        ]
+        skipped = original_count - len(mask_infos)
+        if skipped > 0:
+            print(
+                f"[MaskTracker] Frame {frame_idx}: skipped {skipped} tiny masks "
+                f"(< {self.min_mask_area} px)"
+            )
+
         # Track which actors get matched this frame
         matched_actor_ids: set = set()
 
@@ -126,6 +144,16 @@ class MaskTracker:
                     (centroid[0] - actor.last_centroid[0]) ** 2
                     + (centroid[1] - actor.last_centroid[1]) ** 2
                 ) ** 0.5
+
+                # Area ratio penalty: if current mask area is very different
+                # from actor's historical average, increase effective distance
+                if actor.frames:
+                    avg_area = np.mean([f[2] for f in actor.frames])
+                    area_ratio = max(area, avg_area) / (min(area, avg_area) + 1)
+                    if area_ratio > 3.0:
+                        # Penalize: increase distance proportional to ratio mismatch
+                        dist *= area_ratio / 3.0
+
                 if dist < best_dist:
                     best_dist = dist
                     best_actor_id = aid

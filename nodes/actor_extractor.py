@@ -1,12 +1,12 @@
 """Main ComfyUI node: VideoActorExtractor.
 
-Detects, tracks, identifies, and extracts individual actors from video
+Detects, tracks, and extracts individual actors from video
 with green screen background output.
 
 Uses a mask-centric pipeline:
   1. PersonSegmenter (YOLOv8-seg) detects all person masks per frame
   2. MaskTracker tracks masks across frames via centroid distance
-  3. IdentityCluster merges mask actors into unique people
+  3. Each tracked mask becomes one output video (no face merging)
   4. Continuous segments are built with gap interpolation
   5. Per-actor videos and JSON are generated
 
@@ -48,6 +48,9 @@ except ImportError:
 from pipeline.detector import PersonDetector, BoundingBox
 from pipeline.tracker import PersonTracker
 from pipeline.identity import IdentityCluster
+
+# face_threshold is kept for backward compatibility but identity clustering
+# now uses spatial-temporal constraints to prevent merging co-occurring tracks.
 from pipeline.cropper import ActorCropper
 from pipeline.merger import merge_segments, generate_actor_json
 
@@ -326,7 +329,7 @@ class VideoActorExtractor:
         2. Initialize PersonSegmenter and MaskTracker
         3. For each frame: detect masks, pass to MaskTracker
         4. Finish tracking, get all MaskActors
-        5. Filter short actors, run identity clustering
+        5. Filter short actors — each track becomes one output video
         6. Build continuous segments with interpolation
         7. Encode videos and generate JSON
 
@@ -335,8 +338,8 @@ class VideoActorExtractor:
             model_path: YOLOv8 model path
             seg_model_path: YOLOv8-seg model path for person segmentation
             video_path: Optional original video path for metadata
-            max_actors: Maximum number of actors to detect
-            face_threshold: Face similarity threshold for identity merging
+            max_actors: Maximum number of actors to detect (deprecated, kept for compat)
+            face_threshold: Face similarity threshold (deprecated, kept for compat)
             min_track_length: Minimum number of frames for a valid track
 
         Returns:
@@ -466,6 +469,7 @@ class VideoActorExtractor:
         mask_tracker = MaskTracker(
             max_lost_frames=DEFAULT_MAX_LOST_FRAMES,
             match_threshold_px=150.0,
+            min_mask_area=20000,
         )
 
         # ----------------------------------------------------------------
@@ -548,8 +552,72 @@ class VideoActorExtractor:
             return (empty_json, output_dir, empty_preview)
 
         # ----------------------------------------------------------------
-        # Step 6: Identity clustering
+        # Step 5a: Split mixed tracks (tracks containing different people)
         # ----------------------------------------------------------------
+        # Some tracked masks may have switched identity mid-track (e.g.
+        # tracker follows child, then adult appears in same mask region).
+        # We detect and split these BEFORE identity clustering so each
+        # subtrack gets an independent clustering decision.
+        pre_split_records = {}
+        for aid, actor in long_actors.items():
+            pre_split_records[aid] = _actor_to_synthetic_records(actor)
+
+        split_records, split_to_original = IdentityCluster._split_mixed_tracks(
+            pre_split_records
+        )
+
+        if len(split_records) > len(long_actors):
+            # Splitting happened — create new MaskActor objects for subtracks
+            #
+            # _split_mixed_tracks re-numbers IDs sequentially from 0, so
+            # we need to build a reverse mapping: original_id -> [new_ids].
+            # If multiple new IDs map to the same original, that track was split.
+            orig_to_splits: Dict[int, List[int]] = {}
+            for new_tid, orig_aid in split_to_original.items():
+                orig_to_splits.setdefault(orig_aid, []).append(new_tid)
+
+            new_long_actors: Dict[int, MaskActor] = {}
+
+            for orig_aid, new_tids in orig_to_splits.items():
+                if len(new_tids) == 1 and new_tids[0] == orig_aid:
+                    # Not split and ID is unchanged — keep original MaskActor
+                    new_long_actors[orig_aid] = long_actors[orig_aid]
+                else:
+                    # Split (or ID was renumbered) — reconstruct subtracks
+                    original_actor = long_actors[orig_aid]
+
+                    for new_tid in new_tids:
+                        records = split_records[new_tid]
+                        subtrack_frame_indices = set(r.frame_idx for r in records)
+
+                        sub_frames = [
+                            (fi, frame, area)
+                            for fi, frame, area in original_actor.frames
+                            if fi in subtrack_frame_indices
+                        ]
+
+                        new_actor = MaskActor(
+                            actor_id=new_tid,
+                            frames=sub_frames,
+                            last_centroid=(0, 0),
+                            last_frame_idx=sub_frames[-1][0] if sub_frames else -1,
+                            closed=False,
+                            frame_indices=subtrack_frame_indices,
+                        )
+                        new_long_actors[new_tid] = new_actor
+
+            long_actors = new_long_actors
+            print(
+                f"[VideoActorExtract] Track splitting: "
+                f"{len(pre_split_records)} -> {len(long_actors)} actors"
+            )
+
+        # ----------------------------------------------------------------
+        # Step 5: Identity clustering — merge same-person tracks across time
+        # ----------------------------------------------------------------
+        # Key constraint: tracks that co-occur (overlap in time) can NEVER
+        # be the same person. This prevents merging different people who
+        # happen to have similar faces (e.g., twins, or face embedding limits).
         print("[VideoActorExtract] Step 5: Clustering actor identities...")
         identity = IdentityCluster(threshold=face_threshold)
 
@@ -558,10 +626,12 @@ class VideoActorExtractor:
         for aid, actor in long_actors.items():
             actor_synthetic_records[aid] = _actor_to_synthetic_records(actor)
 
-        # Use cluster_tracks with the synthetic records
-        # The identity module expects {track_id: [FrameRecord, ...]}
+        # Use cluster_tracks — it now enforces spatial-temporal constraints
         actor_to_identity = identity.cluster_tracks(
-            actor_synthetic_records, frame_lookup, min_track_length
+            actor_synthetic_records,
+            frame_lookup,
+            min_track_length,
+            max_lost_frames=DEFAULT_MAX_LOST_FRAMES,
         )
 
         # Group mask actors by identity
@@ -576,7 +646,7 @@ class VideoActorExtractor:
         print(f"  Identified {len(actor_ids_sorted)} unique actors (max: {max_actors})")
 
         # ----------------------------------------------------------------
-        # Step 7: Build continuous segments with interpolation
+        # Step 6: Build continuous segments with interpolation
         # ----------------------------------------------------------------
         print("[VideoActorExtract] Step 6: Building continuous segments...")
         video_info_dict = {
@@ -590,7 +660,7 @@ class VideoActorExtractor:
         all_preview_frames: List[np.ndarray] = []
 
         for actor_id in actor_ids_sorted:
-            # Merge all frames from all mask actors belonging to this identity
+            # Merge all frames from all mask tracks belonging to this identity
             actor_all_frames: List[Tuple[int, np.ndarray, int]] = []
             for aid in identity_to_actors[actor_id]:
                 actor_all_frames.extend(long_actors[aid].frames)
