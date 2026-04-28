@@ -259,7 +259,8 @@ class VideoActorExtractor:
     Output:
         - actor_info_json: JSON string with actor information
         - output_dir: path to output directory containing per-actor MP4s
-        - actor_preview_images: IMAGE tensor with top 5 preview frames per actor
+        - actor_preview_images: IMAGE tensor of shape [num_actors, 5, H, W, 3],
+            top 5 preview frames per actor (padded with black frames if < 5 available)
     """
 
     @classmethod
@@ -457,7 +458,7 @@ class VideoActorExtractor:
                 },
                 indent=2,
             )
-            empty_preview = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
+            empty_preview = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
             return (empty_json, output_dir, empty_preview)
 
         segmenter = PersonSegmenter(model_path=seg_model_path)
@@ -518,7 +519,7 @@ class VideoActorExtractor:
                 },
                 indent=2,
             )
-            empty_preview = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
+            empty_preview = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
             return (empty_json, output_dir, empty_preview)
 
         # ----------------------------------------------------------------
@@ -548,7 +549,7 @@ class VideoActorExtractor:
                 },
                 indent=2,
             )
-            empty_preview = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
+            empty_preview = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
             return (empty_json, output_dir, empty_preview)
 
         # ----------------------------------------------------------------
@@ -657,7 +658,7 @@ class VideoActorExtractor:
             "duration_sec": total_frames / fps if fps > 0 else 0,
         }
         actor_data_for_json = {}
-        all_preview_frames: List[np.ndarray] = []
+        actor_preview_groups: List[List[np.ndarray]] = []
 
         for actor_id in actor_ids_sorted:
             # Merge all frames from all mask tracks belonging to this identity
@@ -681,11 +682,16 @@ class VideoActorExtractor:
 
             # Select top 5 preview frames by mask area (descending)
             top5 = sorted(actor_all_frames, key=lambda x: x[2], reverse=True)[:5]
+            actor_frames: List[np.ndarray] = []
             for _, masked_bgr, _ in top5:
                 # Convert BGR uint8 -> RGB float32 normalized 0-1
                 rgb = masked_bgr[:, :, ::-1].copy()
                 rgb_float = rgb.astype(np.float32) / 255.0
-                all_preview_frames.append(rgb_float)
+                actor_frames.append(rgb_float)
+            # Pad to exactly 5 frames if fewer available
+            while len(actor_frames) < 5:
+                actor_frames.append(np.zeros((img_h, img_w, 3), dtype=np.float32))
+            actor_preview_groups.append(actor_frames)
 
             # Build continuous segments with interpolation
             segments_frames, segments_info = _build_continuous_segments(
@@ -720,10 +726,16 @@ class VideoActorExtractor:
         # ----------------------------------------------------------------
         # Step 8: Build preview tensor
         # ----------------------------------------------------------------
-        if all_preview_frames:
-            preview_tensor = torch.from_numpy(np.stack(all_preview_frames, axis=0))
+        if actor_preview_groups:
+            # Shape: [num_actors, 5, H, W, 3]
+            preview_tensor = torch.from_numpy(
+                np.stack(
+                    [np.stack(group, axis=0) for group in actor_preview_groups], axis=0
+                )
+            )
+            print(f"[VideoActorExtract] Preview tensor shape: {preview_tensor.shape}")
         else:
-            preview_tensor = torch.zeros(0, img_h, img_w, 3, dtype=torch.float32)
+            preview_tensor = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
 
         # ----------------------------------------------------------------
         # Step 9: Generate JSON
