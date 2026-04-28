@@ -122,7 +122,8 @@ ComfyUI-VideoActorExtract/
 ├── requirements.txt               # Python 依赖
 ├── pyproject.toml                 # 项目元数据
 ├── nodes/
-│   └── actor_extractor.py         # 主节点 + 连续段构建
+│   ├── actor_extractor.py         # 主节点 + 连续段构建
+│   └── select_preview.py          # SelectActorPreview 节点
 ├── pipeline/
 │   ├── segmenter.py               # YOLOv8-seg 人物分割
 │   ├── mask_tracker.py            # 质心距离追踪
@@ -147,46 +148,88 @@ ComfyUI-VideoActorExtract/
 
 ## 安装
 
-### 1. 安装到 ComfyUI
+### 1. 安装插件
+
+**方式一：ComfyUI Manager（推荐）**
+
+ComfyUI → Manager → Install Custom Node → 搜索 `ComfyUI-VideoActorExtract` → 点击安装
+
+**方式二：手动安装**
 
 ```bash
-cd ~/App/ComfyUI/custom_nodes
-ln -s ~/Project/ComfyUI-VideoActorExtract ComfyUI-VideoActorExtract
+cd ComfyUI/custom_nodes/
+git clone https://github.com/YunyangGong/ComfyUI-VideoActorExtract.git
 ```
 
 ### 2. 安装依赖
 
 ```bash
-source /opt/homebrew/anaconda3/etc/profile.d/conda.sh
-conda activate comfyui
-
-cd ~/Project/ComfyUI-VideoActorExtract
+cd ComfyUI/custom_nodes/ComfyUI-VideoActorExtract
 pip install -r requirements.txt
 ```
 
 **关键依赖：**
-- `ultralytics` — YOLOv8 检测/分割
+- `ultralytics` — YOLOv8 检测 / 分割
 - `opencv-python` — 图像处理 + 视频编码
 - `insightface` — 人脸识别
 - `onnxruntime` — InsightFace 推理引擎
 - `numpy` — 数值计算
 
+> **注意**：Apple Silicon (M1/M2/M3) Mac 会自动使用 `onnxruntime-silicon`，无需手动切换。
+
 ### 3. 下载模型
 
-```bash
-# 创建模型目录
-mkdir -p ~/App/ComfyUI/models/video-actor-extract/
+所有模型文件需要放到 `ComfyUI/models/video-actor-extract/` 目录下。
 
-# 下载 YOLOv8 检测模型
-curl -L -o ~/App/ComfyUI/models/video-actor-extract/yolov8n.pt \
+#### 3.1 YOLOv8 检测模型 + 分割模型
+
+```bash
+cd ComfyUI/models/video-actor-extract/
+
+# 下载 yolov8n.pt（人物检测）
+curl -L -o yolov8n.pt \
   "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
 
-# 下载 YOLOv8-seg 分割模型
-curl -L -o ~/App/ComfyUI/models/video-actor-extract/yolov8n-seg.pt \
+# 下载 yolov8n-seg.pt（人物分割）
+curl -L -o yolov8n-seg.pt \
   "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n-seg.pt"
 ```
 
-InsightFace 模型 (`buffalo_l`, ~350MB) 会在首次运行时自动下载到 `~/.insightface/models/buffalo_l/`。
+#### 3.2 InsightFace 人脸识别模型
+
+buffalo_l 模型包（~350MB），需要放到 `ComfyUI/models/video-actor-extract/buffalo_l/`。
+
+使用 InsightFace Python API 一键下载：
+
+```python
+from insightface.app import FaceAnalysis
+FaceAnalysis(name='buffalo_l', root='ComfyUI/models/video-actor-extract').prepare(ctx_id=-1, det_size=(640, 640))
+```
+
+> **注意**：InsightFace 默认会把模型下载到 `ComfyUI/models/video-actor-extract/models/buffalo_l/`，需要手动移动到正确位置：
+
+```bash
+# 将模型从 models/ 子目录移到上一级
+mv ComfyUI/models/video-actor-extract/models/buffalo_l/ ComfyUI/models/video-actor-extract/buffalo_l/
+# 清理空目录
+rm -rf ComfyUI/models/video-actor-extract/models/
+```
+
+#### 最终模型目录结构
+
+```
+ComfyUI/models/video-actor-extract/
+├── yolov8n.pt
+├── yolov8n-seg.pt
+└── buffalo_l/
+    ├── 1k3d68.onnx
+    ├── 2d106det.onnx
+    ├── det_10g.onnx
+    ├── genderage.onnx
+    └── w600k_r50.onnx
+```
+
+> **提示**：如果 ComfyUI 是通过 pip 安装的，`ComfyUI/models/` 通常在 ComfyUI 仓库根目录下。如果你使用了自定义的 `--output` 或 `--models` 路径参数，请将模型放到对应的 models 目录中。
 
 ---
 
