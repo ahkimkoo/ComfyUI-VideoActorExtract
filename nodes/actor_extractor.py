@@ -28,15 +28,13 @@ from typing import Tuple, List, Dict, Optional
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.video_reader import get_video_info, extract_frames
+from core.video_reader import get_video_info
 from core.config import (
     DEFAULT_MAX_ACTORS,
     DEFAULT_FACE_THRESHOLD,
-    DEFAULT_FPS_SAMPLE,
     DEFAULT_MIN_TRACK_LENGTH,
     DEFAULT_YOLO_MODEL,
     DEFAULT_MAX_LOST_FRAMES,
-    GREEN_SCREEN_COLOR,
     SEGMENT_GAP_SEC,
 )
 
@@ -45,13 +43,10 @@ try:
     from core.config import DEFAULT_SEG_MODEL
 except ImportError:
     DEFAULT_SEG_MODEL = "yolov8n-seg.pt"
-from pipeline.detector import PersonDetector, BoundingBox
-from pipeline.tracker import PersonTracker
 from pipeline.identity import IdentityCluster
 
 # face_threshold is kept for backward compatibility but identity clustering
 # now uses spatial-temporal constraints to prevent merging co-occurring tracks.
-from pipeline.cropper import ActorCropper
 from pipeline.merger import merge_segments, generate_actor_json
 
 # PersonSegmenter may not exist yet (parallel task creating it)
@@ -259,8 +254,7 @@ class VideoActorExtractor:
     Output:
         - actor_info_json: JSON string with actor information
         - output_dir: path to output directory containing per-actor MP4s
-        - actor_preview_images: IMAGE tensor of shape [num_actors, 5, H, W, 3],
-            top 5 preview frames per actor (padded with black frames if < 5 available)
+        - actor_count: number of detected actors
     """
 
     @classmethod
@@ -307,8 +301,8 @@ class VideoActorExtractor:
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "IMAGE")
-    RETURN_NAMES = ("actor_info_json", "output_dir", "actor_preview_images")
+    RETURN_TYPES = ("STRING", "STRING", "INT")
+    RETURN_NAMES = ("actor_info_json", "output_dir", "actor_count")
     FUNCTION = "extract"
     CATEGORY = "video/actor"
 
@@ -321,7 +315,7 @@ class VideoActorExtractor:
         max_actors: int = DEFAULT_MAX_ACTORS,
         face_threshold: float = DEFAULT_FACE_THRESHOLD,
         min_track_length: int = DEFAULT_MIN_TRACK_LENGTH,
-    ) -> Tuple[str, str, torch.Tensor]:
+    ) -> Tuple[str, str, int]:
         """
         Run the full actor extraction pipeline.
 
@@ -344,7 +338,7 @@ class VideoActorExtractor:
             min_track_length: Minimum number of frames for a valid track
 
         Returns:
-            (actor_info_json, output_dir, actor_preview_images)
+            (actor_info_json, output_dir, actor_count)
         """
 
         output_dir = _get_comfyui_output_dir()
@@ -458,8 +452,7 @@ class VideoActorExtractor:
                 },
                 indent=2,
             )
-            empty_preview = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
-            return (empty_json, output_dir, empty_preview)
+            return (empty_json, output_dir, 0)
 
         segmenter = PersonSegmenter(model_path=seg_model_path)
 
@@ -519,8 +512,7 @@ class VideoActorExtractor:
                 },
                 indent=2,
             )
-            empty_preview = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
-            return (empty_json, output_dir, empty_preview)
+            return (empty_json, output_dir, 0)
 
         # ----------------------------------------------------------------
         # Step 5: Filter short actors
@@ -549,8 +541,7 @@ class VideoActorExtractor:
                 },
                 indent=2,
             )
-            empty_preview = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
-            return (empty_json, output_dir, empty_preview)
+            return (empty_json, output_dir, 0)
 
         # ----------------------------------------------------------------
         # Step 5a: Split mixed tracks (tracks containing different people)
@@ -620,7 +611,25 @@ class VideoActorExtractor:
         # be the same person. This prevents merging different people who
         # happen to have similar faces (e.g., twins, or face embedding limits).
         print("[VideoActorExtract] Step 5: Clustering actor identities...")
-        identity = IdentityCluster(threshold=face_threshold)
+
+        # Resolve model directory for InsightFace (same location as YOLO models)
+        insightface_model_dir = ""
+        try:
+            import folder_paths
+
+            insightface_model_dir = folder_paths.get_folder_paths("video-actor-extract")
+            insightface_model_dir = (
+                insightface_model_dir[0] if insightface_model_dir else ""
+            )
+        except Exception:
+            pass
+        if not insightface_model_dir:
+            # Fallback: derive from the resolved seg_model_path's parent directory
+            insightface_model_dir = os.path.dirname(seg_model_path)
+
+        identity = IdentityCluster(
+            threshold=face_threshold, model_dir=insightface_model_dir
+        )
 
         # Build synthetic FrameRecords from mask actors for identity clustering
         actor_synthetic_records: Dict[int, list] = {}
@@ -658,9 +667,11 @@ class VideoActorExtractor:
             "duration_sec": total_frames / fps if fps > 0 else 0,
         }
         actor_data_for_json = {}
-        actor_preview_groups: List[List[np.ndarray]] = []
+        preview_dir = os.path.join(output_dir, "previews")
+        os.makedirs(preview_dir, exist_ok=True)
+        import cv2
 
-        for actor_id in actor_ids_sorted:
+        for i, actor_id in enumerate(actor_ids_sorted):
             # Merge all frames from all mask tracks belonging to this identity
             actor_all_frames: List[Tuple[int, np.ndarray, int]] = []
             for aid in identity_to_actors[actor_id]:
@@ -680,18 +691,11 @@ class VideoActorExtractor:
                 key=lambda x: x[0],
             )
 
-            # Select top 5 preview frames by mask area (descending)
+            # Save top 5 preview frames by mask area (descending) to disk
             top5 = sorted(actor_all_frames, key=lambda x: x[2], reverse=True)[:5]
-            actor_frames: List[np.ndarray] = []
-            for _, masked_bgr, _ in top5:
-                # Convert BGR uint8 -> RGB float32 normalized 0-1
-                rgb = masked_bgr[:, :, ::-1].copy()
-                rgb_float = rgb.astype(np.float32) / 255.0
-                actor_frames.append(rgb_float)
-            # Pad to exactly 5 frames if fewer available
-            while len(actor_frames) < 5:
-                actor_frames.append(np.zeros((img_h, img_w, 3), dtype=np.float32))
-            actor_preview_groups.append(actor_frames)
+            for k, (_, masked_bgr, _) in enumerate(top5):
+                preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.jpg")
+                cv2.imwrite(preview_path, masked_bgr)
 
             # Build continuous segments with interpolation
             segments_frames, segments_info = _build_continuous_segments(
@@ -724,21 +728,7 @@ class VideoActorExtractor:
             }
 
         # ----------------------------------------------------------------
-        # Step 8: Build preview tensor
-        # ----------------------------------------------------------------
-        if actor_preview_groups:
-            # Shape: [num_actors, 5, H, W, 3]
-            preview_tensor = torch.from_numpy(
-                np.stack(
-                    [np.stack(group, axis=0) for group in actor_preview_groups], axis=0
-                )
-            )
-            print(f"[VideoActorExtract] Preview tensor shape: {preview_tensor.shape}")
-        else:
-            preview_tensor = torch.zeros(0, 5, img_h, img_w, 3, dtype=torch.float32)
-
-        # ----------------------------------------------------------------
-        # Step 9: Generate JSON
+        # Step 8: Generate JSON
         # ----------------------------------------------------------------
         json_path = os.path.join(output_dir, "actor_info.json")
         generate_actor_json(actor_data_for_json, video_info_dict, json_path)
@@ -747,7 +737,7 @@ class VideoActorExtractor:
             json_content = f.read()
 
         print(f"[VideoActorExtract] Done! Output in {output_dir}")
-        return (json_content, output_dir, preview_tensor)
+        return (json_content, output_dir, len(actor_ids_sorted))
 
 
 # ComfyUI node registration

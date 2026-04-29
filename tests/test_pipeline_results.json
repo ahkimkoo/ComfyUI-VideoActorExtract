@@ -1,0 +1,73 @@
+{
+  "expected": {
+    "num_actors": 3,
+    "description": "1 man (appears at beginning and end with a gap), 2 children (appear together in same shots)"
+  },
+  "actual_num_actors": 3,
+  "match": true,
+  "output_dir": "/Users/cherokee/output/ComfyUI-VideoActorExtract/1465a0a8",
+  "pipeline_result": {
+    "actors": [
+      {
+        "actor_id": "actor_0",
+        "segment_count": 2,
+        "total_frames": 125,
+        "segments": [
+          {
+            "segment_id": 0,
+            "start_frame": 0,
+            "end_frame": 96,
+            "start_time_sec": 0.0,
+            "end_time_sec": 4.0,
+            "frame_count": 97
+          },
+          {
+            "segment_id": 1,
+            "start_frame": 261,
+            "end_frame": 288,
+            "start_time_sec": 10.88,
+            "end_time_sec": 12.0,
+            "frame_count": 28
+          }
+        ]
+      },
+      {
+        "actor_id": "actor_1",
+        "segment_count": 1,
+        "total_frames": 100,
+        "segments": [
+          {
+            "segment_id": 0,
+            "start_frame": 97,
+            "end_frame": 196,
+            "start_time_sec": 4.04,
+            "end_time_sec": 8.17,
+            "frame_count": 100
+          }
+        ]
+      },
+      {
+        "actor_id": "actor_2",
+        "segment_count": 1,
+        "total_frames": 164,
+        "segments": [
+          {
+            "segment_id": 0,
+            "start_frame": 97,
+            "end_frame": 260,
+            "start_time_sec": 4.04,
+            "end_time_sec": 10.83,
+            "frame_count": 164
+          }
+        ]
+      }
+    ],
+    "video_info": {
+      "total_frames": 290,
+      "fps": 24.0,
+      "width": 1080,
+      "height": 1916,
+      "duration_sec": 12.083333333333334
+    }
+  }
+}

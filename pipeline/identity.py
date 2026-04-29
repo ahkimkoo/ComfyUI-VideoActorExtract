@@ -11,7 +11,6 @@ import math
 import os
 import numpy as np
 from typing import Dict, List, Tuple, Optional
-from collections import defaultdict
 
 from pipeline.tracker import FrameRecord
 from pipeline.detector import BoundingBox
@@ -21,19 +20,18 @@ from core.config import DEFAULT_FACE_THRESHOLD, DEFAULT_MIN_FACE_CONFIDENCE
 class IdentityCluster:
     """Identity clustering using InsightFace face embeddings."""
 
-    def __init__(self, threshold: float = DEFAULT_FACE_THRESHOLD):
+    def __init__(self, threshold: float = DEFAULT_FACE_THRESHOLD, model_dir: str = ""):
         self.threshold = threshold
         self.model = None
         self._loaded = False
+        self.model_dir = model_dir
 
     def _ensure_loaded(self):
         """Lazy-load InsightFace model."""
         if self._loaded:
             return
         try:
-            import insightface
             from insightface.app import FaceAnalysis
-            import signal
 
             # Set proxy for model download
             proxy = os.environ.get("http_proxy", os.environ.get("HTTP_PROXY", ""))
@@ -41,7 +39,25 @@ class IdentityCluster:
                 os.environ.setdefault("HTTP_PROXY", proxy)
                 os.environ.setdefault("HTTPS_PROXY", proxy)
 
-            model_dir = os.path.expanduser("~/.insightface/models")
+            # Resolve model directory: caller-specified > ComfyUI models dir > default
+            model_dir = self.model_dir
+            if not model_dir or not os.path.isdir(os.path.join(model_dir, "buffalo_l")):
+                # Try ComfyUI folder_paths "video-actor-extract"
+                try:
+                    import folder_paths
+
+                    paths = folder_paths.get_folder_paths("video-actor-extract")
+                    for p in paths:
+                        candidate = os.path.join(p, "buffalo_l")
+                        if os.path.isdir(candidate):
+                            model_dir = p
+                            break
+                except Exception:
+                    pass
+
+            if not model_dir or not os.path.isdir(os.path.join(model_dir, "buffalo_l")):
+                # Fallback to default InsightFace location
+                model_dir = os.path.expanduser("~/.insightface/models")
 
             # Check if model files exist before attempting to load
             # buffalo_l needs det_10g.onnx and w600k_r50.onnx
@@ -284,8 +300,6 @@ class IdentityCluster:
             valid_tracks.keys(),
             key=lambda tid: 0 if track_embeddings[tid] is not None else 1,
         )
-
-        merge_log: List[Tuple[int, int, float]] = []
 
         # Margin for spatial tiebreaker: when top candidates' adjusted
         # similarity scores differ by ≤ this value, use spatial centroid
