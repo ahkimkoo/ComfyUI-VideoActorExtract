@@ -235,28 +235,130 @@ ComfyUI/models/video-actor-extract/
 
 ## 使用方法
 
-### ComfyUI 工作流
+![工作流示例](examples/screenshot.png)
 
-1. 启动 ComfyUI: `python main.py --port 8188`
-2. 打开 http://127.0.0.1:8188
-3. 拖拽 `examples/video-actor-extract.json` 到画布（或手动创建）
-4. 连接节点:
-   ```
-   VHS LoadVideo (IMAGE) → VideoActorExtractor → PreviewImage
-   ```
-5. 设置参数，点击 Queue Prompt
+> 工作流文件：[`examples/video-actor-extract.json`](examples/video-actor-extract.json)（拖入 ComfyUI 画布即可使用）
 
-### 节点参数
+### 节点说明
 
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `images` | IMAGE | (必填) | 从 VHS LoadVideo 连接 |
-| `model_path` | STRING | `yolov8n.pt` | YOLO 检测模型路径 |
-| `seg_model_path` | STRING | `yolov8n-seg.pt` | YOLOv8-seg 分割模型路径 |
-| `video_path` | STRING | `""` | 原始视频路径（用于精确元数据） |
-| `max_actors` | INT | `10` | 最大检测人数 |
-| `face_threshold` | FLOAT | `0.6` | 人脸相似度阈值 (0.1-0.99) |
-| `min_track_length` | INT | `5` | 最小追踪帧数（过滤误检） |
+本插件提供两个 ComfyUI 节点：
+
+---
+
+#### VideoActorExtractor
+
+从视频中自动检测、追踪、识别所有出场人物，输出每个角色的绿幕抠图视频和结构化元数据。
+
+**输入**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `images` | IMAGE | ✅ | — | 视频帧 batch。从 VHS LoadVideo / LoadVideoPath 等节点连接 |
+| `model_path` | STRING | — | `yolov8n.pt` | YOLOv8 人物检测模型文件名 |
+| `seg_model_path` | STRING | — | `yolov8n-seg.pt` | YOLOv8-seg 人物分割模型文件名 |
+| `video_path` | STRING | — | `""` | 原始视频文件路径。填入后用于精确计算元数据（时长、帧率等） |
+| `max_actors` | INT | — | `10` | 最大检测人数 (1-50) |
+| `face_threshold` | FLOAT | — | `0.6` | 人脸相似度聚类阈值 (0.1-0.99)。越高越严格，越不容易误合并 |
+| `min_track_length` | INT | — | `5` | 最小追踪帧数 (1-100)。低于此值的 track 会被过滤掉 |
+
+**输出**
+
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| `actor_info_json` | STRING | JSON 字符串，包含所有 actor 的出镜段信息（帧范围、时间戳） |
+| `output_dir` | STRING | 输出目录路径，包含 MP4 视频、预览图和元数据文件 |
+| `actor_count` | INT | 检测到的 actor 总数 |
+
+**输出目录结构**
+
+```
+{output_dir}/
+├── actor_0.mp4              # 第一个人物的绿幕视频
+├── actor_1.mp4              # 第二个人物的绿幕视频
+├── ...
+├── actor_info.json          # 结构化元数据（所有 actor）
+└── previews/
+    ├── actor_0_0.jpg       # actor_0 的第 1 张预览（按 bbox 面积降序）
+    ├── actor_0_1.jpg       # actor_0 的第 2 张预览
+    ├── actor_0_2.jpg       # ...
+    ├── actor_0_3.jpg
+    ├── actor_0_4.jpg       # actor_0 的第 5 张预览
+    ├── actor_0_indexes.json # actor_0 预览帧在原视频中的帧索引 [22, 32, 72, 23, 24]
+    ├── actor_1_0.jpg
+    ├── ...
+    └── actor_1_indexes.json
+```
+
+**典型连接方式**
+
+```
+VHS_LoadVideoPath → VideoActorExtractor → (隐式保存文件到磁盘)
+```
+
+> VideoActorExtractor 不是 output node，不会自动在 ComfyUI 中显示预览。它的输出（JSON、目录路径、actor 数量）可以连接到其他节点做进一步处理。
+
+---
+
+#### SelectActorPreview
+
+加载指定 actor 的预览图片，作为 IMAGE batch 输出，同时返回这些预览帧在原视频中的帧索引。
+
+**输入**
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `output_dir` | STRING | ✅ | — | VideoActorExtractor 的 `output_dir` 输出 |
+| `actor_index` | INT | ✅ | `0` | 要预览的 actor 编号 (0-based)。0 = 第一个人物，1 = 第二个，以此类推 |
+
+**输出**
+
+| 输出 | 类型 | 说明 |
+|------|------|------|
+| `images` | IMAGE | 预览图 batch `[N, H, W, 3]` (RGB, float32, 0-1)。N 通常为 5，但如果该 actor 出镜帧不足 5 帧则更少 |
+| `indexes` | INT[] | 预览帧在原视频中的帧索引列表。例如 `[22, 32, 72, 23, 24]` 表示第 1 张预览图来自原视频第 22 帧 |
+
+> 预览图按人物在画面中的 bbox 面积（近似人像/面部大小）降序排列，选取最大的 5 帧。
+
+**典型连接方式**
+
+```
+VideoActorExtractor → SelectActorPreview → PreviewImage (查看预览图)
+                                        → 任意节点 (使用 indexes 帧索引)
+```
+
+---
+
+### 完整工作流示例
+
+```
+┌───────────────────────┐
+│   VHS_LoadVideoPath    │  加载视频文件
+│   video: your_video.mp4│
+└───────────┬───────────┘
+            │ IMAGE batch
+            ▼
+┌───────────────────────┐
+│  VideoActorExtractor   │  检测 → 追踪 → 聚类 → 绿幕视频
+│  max_actors: 5        │
+│  face_threshold: 0.6   │
+└──┬──────┬──────┬──────┘
+   │      │      │
+   │STRING │STRING │INT
+   ▼      ▼      ▼
+ (json) (dir)  (count)
+
+            │ STRING (output_dir)
+            ▼
+┌───────────────────────┐
+│  SelectActorPreview   │  加载 actor_0 的预览图
+│  actor_index: 0       │
+└──┬──────────────┬────┘
+   │IMAGE         │INT[]
+   ▼              ▼
+┌──────────┐  (帧索引列表)
+│PreviewImage│  [22, 32, 72, 23, 24]
+└──────────┘
+```
 
 ### 参数调优指南
 
@@ -278,10 +380,20 @@ ComfyUI/models/video-actor-extract/
 
 ```
 {uuid}/
-├── actor_0.mp4          # 第一个人物的绿幕视频
-├── actor_1.mp4          # 第二个人物的绿幕视频
+├── actor_0.mp4              # 第一个人物的绿幕视频
+├── actor_1.mp4              # 第二个人物的绿幕视频
 ├── ...
-└── actor_info.json      # 结构化元数据
+├── actor_info.json          # 结构化元数据（所有 actor）
+└── previews/
+    ├── actor_0_0.jpg       # actor_0 预览图（按 bbox 面积降序取前 5）
+    ├── actor_0_1.jpg
+    ├── actor_0_2.jpg
+    ├── actor_0_3.jpg
+    ├── actor_0_4.jpg
+    ├── actor_0_indexes.json # 预览帧在原视频中的帧索引
+    ├── actor_1_0.jpg
+    ├── ...
+    └── actor_1_indexes.json
 ```
 
 ### JSON 格式
@@ -327,18 +439,15 @@ ComfyUI/models/video-actor-extract/
 
 ## 测试
 
-### 自动化测试脚本
+### API 测试（完整工作流）
 
-```bash
-# 使用 comfyui conda 环境
-cd ~/Project/ComfyUI-VideoActorExtract
-/opt/homebrew/anaconda3/envs/comfyui/bin/python -c "
+```python
 import json, urllib.request, time
 
 wf = {
     'prompt': {
-        '1': {
-            'class_type': 'VHS_LoadVideo',
+        '7': {
+            'class_type': 'VHS_LoadVideoPath',
             'inputs': {
                 'video': 'your_video.mp4',
                 'force_rate': 0,
@@ -349,20 +458,26 @@ wf = {
                 'select_every_nth': 1
             }
         },
-        '2': {
+        '33': {
             'class_type': 'VideoActorExtractor',
             'inputs': {
-                'images': ['1', 0],
-                'model_path': 'yolov8n.pt',
-                'seg_model_path': 'yolov8n-seg.pt',
-                'max_actors': 10,
+                'images': ['7', 0],
+                'video_path': 'your_video.mp4',
+                'max_actors': 5,
                 'face_threshold': 0.6,
-                'min_track_length': 3
+                'min_track_length': 5
             }
         },
-        '3': {
+        '34': {
+            'class_type': 'SelectActorPreview',
+            'inputs': {
+                'output_dir': ['33', 1],
+                'actor_index': 0
+            }
+        },
+        '35': {
             'class_type': 'PreviewImage',
-            'inputs': {'images': ['2', 2]}
+            'inputs': {'images': ['34', 0]}
         }
     }
 }
@@ -377,7 +492,7 @@ r = urllib.request.urlopen(req, timeout=30).read()
 pid = json.loads(r)['prompt_id']
 print(f'Queued: {pid}')
 
-for i in range(300):
+for i in range(600):
     time.sleep(2)
     h = json.loads(urllib.request.urlopen(
         f'http://127.0.0.1:8188/history/{pid}', timeout=10
@@ -394,7 +509,6 @@ for i in range(300):
             break
     if i % 15 == 0:
         print('.', end='', flush=True)
-"
 ```
 
 ### 验证输出

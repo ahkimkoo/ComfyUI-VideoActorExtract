@@ -1,10 +1,12 @@
 """SelectActorPreview node for ComfyUI.
 
 Loads all preview images for a given actor from disk and returns
-them as a single IMAGE batch tensor [N, H, W, 3].
+them as a single IMAGE batch tensor [N, H, W, 3], along with the
+frame indexes of the selected previews.
 """
 
 import glob
+import json
 import os
 
 import numpy as np
@@ -24,13 +26,14 @@ class SelectActorPreview:
             }
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
+    RETURN_TYPES = ("IMAGE", "INT")
+    RETURN_NAMES = ("images", "indexes")
+    OUTPUT_IS_LIST = (False, True)
     FUNCTION = "select"
     CATEGORY = "video/actor"
     OUTPUT_NODE = False
 
-    def select(self, output_dir: str, actor_index: int) -> Tuple[torch.Tensor]:
+    def select(self, output_dir: str, actor_index: int) -> Tuple[torch.Tensor, list]:
         """Load all preview images for a specific actor.
 
         Args:
@@ -38,10 +41,9 @@ class SelectActorPreview:
             actor_index: Which actor (0-based).
 
         Returns:
-            Tuple of one 4D tensor [N, H, W, 3] RGB float32 in 0-1 range,
-            where N is the number of preview images found for this actor.
-            Must return a tuple (not bare tensor) so ComfyUI's merge_result_data
-            correctly interprets it as a single IMAGE output.
+            Tuple of:
+            - 4D tensor [N, H, W, 3] RGB float32 in 0-1 range.
+            - List of frame indexes: [frame_idx_0, frame_idx_1, ...]
         """
         import cv2
 
@@ -50,7 +52,7 @@ class SelectActorPreview:
 
         if not paths:
             print(f"[SelectActorPreview] No previews found: {pattern}")
-            return (torch.zeros(1, 512, 512, 3, dtype=torch.float32),)
+            return (torch.zeros(1, 512, 512, 3, dtype=torch.float32), [])
 
         frames = []
         for p in paths:
@@ -61,13 +63,26 @@ class SelectActorPreview:
             frames.append(img_rgb.astype(np.float32) / 255.0)
 
         if not frames:
-            return (torch.zeros(1, 512, 512, 3, dtype=torch.float32),)
+            return (torch.zeros(1, 512, 512, 3, dtype=torch.float32), [])
 
         tensor = torch.from_numpy(np.stack(frames))  # [N, H, W, 3]
-        print(
-            f"[SelectActorPreview] actor_{actor_index}: loaded {len(frames)} previews, shape={tensor.shape}"
+
+        # Read frame indexes from the JSON file written by VideoActorExtractor
+        indexes_path = os.path.join(
+            output_dir, "previews", f"actor_{actor_index}_indexes.json"
         )
-        return (tensor,)
+        if os.path.isfile(indexes_path):
+            with open(indexes_path, "r") as f:
+                indexes = json.load(f)
+        else:
+            indexes = []
+
+        print(
+            f"[SelectActorPreview] actor_{actor_index}: "
+            f"loaded {len(frames)} previews, shape={tensor.shape}, "
+            f"indexes={indexes}"
+        )
+        return (tensor, indexes)
 
 
 # ComfyUI node registration

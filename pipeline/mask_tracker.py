@@ -24,7 +24,9 @@ class MaskActor:
     """
 
     actor_id: int
-    frames: List[Tuple[int, np.ndarray, int]] = field(default_factory=list)
+    frames: List[Tuple[int, np.ndarray, int, int]] = field(default_factory=list)
+    # Each entry: (frame_idx, masked_frame, mask_area, bbox_area)
+    # bbox_area = mask bounding box width * height (proxy for person/face size)
     last_centroid: Tuple[float, float] = (0.0, 0.0)
     last_frame_idx: int = -1
     closed: bool = False
@@ -162,7 +164,13 @@ class MaskTracker:
                 # Assign to existing actor
                 actor = self._actors[best_actor_id]
                 masked_frame = segmenter.apply_mask(frame, mask)
-                actor.frames.append((frame_idx, masked_frame, area))
+                mbbox = self._compute_mask_bbox(mask)
+                bbox_area = (
+                    int((mbbox[2] - mbbox[0]) * (mbbox[3] - mbbox[1]))
+                    if mbbox
+                    else area
+                )
+                actor.frames.append((frame_idx, masked_frame, area, bbox_area))
                 actor.last_centroid = centroid
                 actor.last_frame_idx = frame_idx
                 actor.frame_indices.add(frame_idx)
@@ -176,7 +184,13 @@ class MaskTracker:
                 )
                 self._next_actor_id += 1
                 masked_frame = segmenter.apply_mask(frame, mask)
-                actor.frames.append((frame_idx, masked_frame, area))
+                mbbox = self._compute_mask_bbox(mask)
+                bbox_area = (
+                    int((mbbox[2] - mbbox[0]) * (mbbox[3] - mbbox[1]))
+                    if mbbox
+                    else area
+                )
+                actor.frames.append((frame_idx, masked_frame, area, bbox_area))
                 actor.frame_indices.add(frame_idx)
                 self._actors[actor.actor_id] = actor
                 matched_actor_ids.add(actor.actor_id)

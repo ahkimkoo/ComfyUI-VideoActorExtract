@@ -1,35 +1,153 @@
 {
-  "id": "video-actor-extract-vhs",
-  "revision": 2.0,
-  "last_node_id": 4,
-  "last_link_id": 2,
+  "id": "video-actor-extract-workflow",
+  "revision": 1,
+  "last_node_id": 52,
+  "last_link_id": 114,
   "nodes": [
     {
-      "id": 1,
-      "type": "VHS_LoadVideo",
+      "id": 49,
+      "type": "Note",
       "pos": [
-        100,
-        100
+        -202.01298945540148,
+        91.56804401870471
       ],
       "size": [
-        315,
-        334
+        539.7507178940334,
+        88
       ],
       "flags": {},
       "order": 0,
       "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "JSON格式返回了每个演员的镜头片段，可能有不连续的多段，本示例是将第一个演员的第一片段展示出来"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 14,
+      "type": "Light-Tool: KeyValue",
+      "pos": [
+        886.9816680949265,
+        668.7505356244081
+      ],
+      "size": [
+        365.31842225827313,
+        112
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
       "inputs": [
         {
-          "name": "meta_batch",
-          "type": "VHS_BatchManager",
-          "link": null,
-          "shape": 7
+          "name": "data",
+          "type": "STRING",
+          "widget": {
+            "name": "data"
+          },
+          "link": 110
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            18
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-light-tool",
+        "ver": "1.4.8",
+        "Node name for S&R": "Light-Tool: KeyValue"
+      },
+      "widgets_values": [
+        "",
+        "actors[0].segments[0].frame_count"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "Light-Tool: KeyValue",
+      "pos": [
+        903.4404532261365,
+        409.0682768359372
+      ],
+      "size": [
+        344.56220440738684,
+        112
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "data",
+          "type": "STRING",
+          "widget": {
+            "name": "data"
+          },
+          "link": 109
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            15
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-light-tool",
+        "ver": "1.4.8",
+        "Node name for S&R": "Light-Tool: KeyValue"
+      },
+      "widgets_values": [
+        "",
+        "actors[0].segments[0].start_frame"
+      ]
+    },
+    {
+      "id": 12,
+      "type": "ImageFromBatch",
+      "pos": [
+        1684.3988328395346,
+        414.4006695678382
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 14
         },
         {
-          "name": "vae",
-          "type": "VAE",
-          "link": null,
-          "shape": 7
+          "name": "batch_index",
+          "type": "INT",
+          "widget": {
+            "name": "batch_index"
+          },
+          "link": 15
+        },
+        {
+          "name": "length",
+          "type": "INT",
+          "widget": {
+            "name": "length"
+          },
+          "link": 18
         }
       ],
       "outputs": [
@@ -37,32 +155,617 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            1
-          ],
-          "shape": 3,
-          "slot_index": 0
+            19
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.11.1",
+        "Node name for S&R": "ImageFromBatch"
+      },
+      "widgets_values": [
+        0,
+        1
+      ]
+    },
+    {
+      "id": 15,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        2029.2290105914162,
+        184.92301190649482
+      ],
+      "size": [
+        425.42824632812517,
+        480.0533885595704
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 19
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 8,
+        "loop_count": 0,
+        "filename_prefix": "AnimateDiff",
+        "format": "image/gif",
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "AnimateDiff_00047.gif",
+            "subfolder": "",
+            "type": "output",
+            "format": "image/gif",
+            "frame_rate": 24,
+            "workflow": "AnimateDiff_00047.png",
+            "fullpath": "/Users/cherokee/App/ComfyUI/output/AnimateDiff_00047.gif"
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "easy showAnything",
+      "pos": [
+        -181.17299993109978,
+        278.3527596933097
+      ],
+      "size": [
+        693.2432801881951,
+        634.0965178706333
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 83
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": [
+            109,
+            110
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy showAnything"
+      },
+      "widgets_values": [
+        "{\n  \"actors\": [\n    {\n      \"actor_id\": \"actor_0\",\n      \"segment_count\": 1,\n      \"total_frames\": 185,\n      \"segments\": [\n        {\n          \"segment_id\": 0,\n          \"start_frame\": 0,\n          \"end_frame\": 184,\n          \"start_time_sec\": 0.0,\n          \"end_time_sec\": 6.13,\n          \"frame_count\": 185\n        }\n      ]\n    },\n    {\n      \"actor_id\": \"actor_1\",\n      \"segment_count\": 2,\n      \"total_frames\": 145,\n      \"segments\": [\n        {\n          \"segment_id\": 0,\n          \"start_frame\": 0,\n          \"end_frame\": 100,\n          \"start_time_sec\": 0.0,\n          \"end_time_sec\": 3.33,\n          \"frame_count\": 101\n        },\n        {\n          \"segment_id\": 1,\n          \"start_frame\": 197,\n          \"end_frame\": 240,\n          \"start_time_sec\": 6.57,\n          \"end_time_sec\": 8.0,\n          \"frame_count\": 44\n        }\n      ]\n    }\n  ],\n  \"video_info\": {\n    \"total_frames\": 241,\n    \"fps\": 30.0,\n    \"width\": 1280,\n    \"height\": 720,\n    \"duration_sec\": 8.033333333333333\n  }\n}"
+      ]
+    },
+    {
+      "id": 50,
+      "type": "Note",
+      "pos": [
+        7.730193071286009,
+        -572.7841845791409
+      ],
+      "size": [
+        273.6261876218455,
+        88
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "选取其中一个演员，images输出最佳镜头图片5张，indexes输出一个数组，代表这5张最佳图片在原片中的帧的位置序号。\nactor_index是指定演员，从0开始。"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 39,
+      "type": "SelectActorPreview",
+      "pos": [
+        11.354109104226012,
+        -429.31783673143843
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "output_dir",
+          "type": "STRING",
+          "widget": {
+            "name": "output_dir"
+          },
+          "link": 95
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            97
+          ]
+        },
+        {
+          "name": "indexes",
+          "shape": 6,
+          "type": "INT",
+          "links": [
+            104
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ahkimkoo/ComfyUI-VideoActorExtract",
+        "ver": "59e768891c7895e651ef015d1f0d654414c5d4e2",
+        "Node name for S&R": "SelectActorPreview"
+      },
+      "widgets_values": [
+        "",
+        0
+      ]
+    },
+    {
+      "id": 51,
+      "type": "Note",
+      "pos": [
+        -915.2231052180729,
+        -1081.1094304131855
+      ],
+      "size": [
+        460.3439097133936,
+        96.59345974514576
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "actor_info_json输出json格式的各演员的镜头片段，包括起始和结束，演员有多段不连续出场可以准确识别。\noutput_dir是磁盘写入位置，为后续的Select Actor Preview提供输出。\nactor_count表示一共识别到几个演员。"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 33,
+      "type": "VideoActorExtractor",
+      "pos": [
+        -905.5575225051441,
+        -930.3005005925236
+      ],
+      "size": [
+        400,
+        262
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 82
+        }
+      ],
+      "outputs": [
+        {
+          "name": "actor_info_json",
+          "type": "STRING",
+          "links": [
+            83
+          ]
+        },
+        {
+          "name": "output_dir",
+          "type": "STRING",
+          "links": [
+            86,
+            95
+          ]
+        },
+        {
+          "name": "actor_count",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "ahkimkoo/ComfyUI-VideoActorExtract",
+        "ver": "59e768891c7895e651ef015d1f0d654414c5d4e2",
+        "Node name for S&R": "VideoActorExtractor"
+      },
+      "widgets_values": [
+        "yolov8n.pt",
+        "yolov8n-seg.pt",
+        "",
+        10,
+        0.6,
+        5,
+        "View"
+      ],
+      "color": "#233",
+      "bgcolor": "#355"
+    },
+    {
+      "id": 7,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        -1782.2075488094324,
+        -696.568435049795
+      ],
+      "size": [
+        276.7731852541938,
+        468.1533671602491
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            14,
+            82,
+            105
+          ]
         },
         {
           "name": "frame_count",
           "type": "INT",
-          "links": null,
-          "shape": 3
+          "links": null
         },
         {
           "name": "audio",
           "type": "AUDIO",
-          "links": null,
-          "shape": 3
+          "links": null
         },
         {
           "name": "video_info",
           "type": "VHS_VIDEOINFO",
-          "links": null,
-          "shape": 3
+          "links": [
+            20
+          ]
         }
       ],
       "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
         "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "seedance2_output_v2.mp4",
+        "force_rate": 0,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "seedance2_output_v2.mp4",
+            "type": "input",
+            "format": "video/mp4",
+            "force_rate": 0,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1
+          }
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "VHS_VideoInfo",
+      "pos": [
+        -1417.6805443427775,
+        -583.7977326752438
+      ],
+      "size": [
+        233.455078125,
+        206
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "source_fps🟨",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "source_frame_count🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "source_duration🟨",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "source_width🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "source_height🟨",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "loaded_fps🟦",
+          "type": "FLOAT",
+          "links": [
+            21,
+            102
+          ]
+        },
+        {
+          "name": "loaded_frame_count🟦",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "loaded_duration🟦",
+          "type": "FLOAT",
+          "links": null
+        },
+        {
+          "name": "loaded_width🟦",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "loaded_height🟦",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_VideoInfo"
+      },
+      "widgets_values": {}
+    },
+    {
+      "id": 17,
+      "type": "easy showAnything",
+      "pos": [
+        -84.80610612941892,
+        -1258.2974149588454
+      ],
+      "size": [
+        326.013905,
+        121.32704902343747
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 86
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": [
+            99
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy showAnything"
+      },
+      "widgets_values": [
+        "/Users/cherokee/App/ComfyUI/output/ComfyUI-VideoActorExtract/79972e2d"
+      ]
+    },
+    {
+      "id": 42,
+      "type": "StringConcatenate",
+      "pos": [
+        347.70629336310714,
+        -1266.8327700310647
+      ],
+      "size": [
+        310.60916467274296,
+        166
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "string_a",
+          "type": "STRING",
+          "widget": {
+            "name": "string_a"
+          },
+          "link": 99
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            100
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.11.1",
+        "Node name for S&R": "StringConcatenate"
+      },
+      "widgets_values": [
+        "",
+        "/actor_0.mp4",
+        ""
+      ]
+    },
+    {
+      "id": 41,
+      "type": "VHS_LoadVideoPath",
+      "pos": [
+        746.4944570287508,
+        -1286.409023936837
+      ],
+      "size": [
+        242.74609375,
+        286
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "video",
+          "type": "STRING",
+          "widget": {
+            "name": "video"
+          },
+          "link": 100
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            101
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_LoadVideoPath"
       },
       "widgets_values": {
         "video": "",
@@ -71,140 +774,626 @@
         "custom_height": 0,
         "frame_load_cap": 0,
         "skip_first_frames": 0,
-        "select_every_nth": 1
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "",
+            "type": "path",
+            "format": "video/",
+            "force_rate": 0,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1
+          }
+        }
       }
     },
     {
-      "id": 2,
-      "type": "VideoActorExtractor",
+      "id": 43,
+      "type": "VHS_VideoCombine",
       "pos": [
-        500,
-        100
+        1184.6567129272887,
+        -1266.7642420885704
       ],
       "size": [
-        400,
-        200
+        267.4951712141915,
+        391.21603380798274
       ],
       "flags": {},
-      "order": 1,
+      "order": 20,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 1
+          "link": 101
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": 102
         }
       ],
       "outputs": [
         {
-          "name": "actor_info_json",
-          "type": "STRING",
-          "links": [
-            2
-          ],
-          "shape": 3,
-          "slot_index": 0
-        },
-        {
-          "name": "output_dir",
-          "type": "STRING",
-          "links": null,
-          "shape": 3
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
         }
       ],
       "properties": {
-        "Node name for S&R": "VideoActorExtractor"
+        "cnr_id": "comfyui-videohelpersuite",
+        "ver": "1.7.9",
+        "Node name for S&R": "VHS_VideoCombine"
       },
-      "widgets_values": [
-        "yolov8n.pt",
-        "",
-        10,
-        0.6,
-        5
-      ],
-      "color": "#233",
-      "bgcolor": "#355"
+      "widgets_values": {
+        "frame_rate": 8,
+        "loop_count": 0,
+        "filename_prefix": "AnimateDiff",
+        "format": "image/gif",
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": false,
+          "params": {
+            "filename": "AnimateDiff_00046.gif",
+            "subfolder": "",
+            "type": "output",
+            "format": "image/gif",
+            "frame_rate": 24,
+            "workflow": "AnimateDiff_00046.png",
+            "fullpath": "/Users/cherokee/App/ComfyUI/output/AnimateDiff_00046.gif"
+          }
+        }
+      }
     },
     {
-      "id": 3,
-      "type": "Save Text File",
+      "id": 40,
+      "type": "ImageFromBatch",
       "pos": [
-        1000,
-        100
+        561.2324804189176,
+        -678.4051311888952
       ],
       "size": [
-        400,
-        178
+        270,
+        82
       ],
       "flags": {},
-      "order": 2,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
-          "name": "text",
-          "type": "STRING",
-          "link": 2,
-          "widget": {
-            "name": "text"
-          }
+          "name": "image",
+          "type": "IMAGE",
+          "link": 97
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            98
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.11.1",
+        "Node name for S&R": "ImageFromBatch"
+      },
+      "widgets_values": [
+        0,
+        5
+      ]
+    },
+    {
+      "id": 36,
+      "type": "PreviewImage",
+      "pos": [
+        991.2003211588111,
+        -699.235027341979
+      ],
+      "size": [
+        210,
+        258
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 98
         }
       ],
       "outputs": [],
       "properties": {
-        "Node name for S&R": "Save Text File"
+        "cnr_id": "comfy-core",
+        "ver": "0.11.1",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 47,
+      "type": "PreviewImage",
+      "pos": [
+        1828.1010519313934,
+        -312.4672153310392
+      ],
+      "size": [
+        210,
+        258
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 107
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.11.1",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 46,
+      "type": "ImageFromBatch",
+      "pos": [
+        1349.882320393538,
+        -254.1242876572756
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 105
+        },
+        {
+          "name": "batch_index",
+          "type": "INT",
+          "widget": {
+            "name": "batch_index"
+          },
+          "link": 114
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            107
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.11.1",
+        "Node name for S&R": "ImageFromBatch"
       },
       "widgets_values": [
-        "./ComfyUI/output/[time(%Y-%m-%d)]",
-        "actor_info",
-        "_",
-        4,
-        ".txt",
-        "utf-8",
-        ""
+        0,
+        1
+      ]
+    },
+    {
+      "id": 45,
+      "type": "easy indexAnything",
+      "pos": [
+        540.9346792435284,
+        -294.998590036874
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "any",
+          "type": "*",
+          "link": 104
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out",
+          "type": "*",
+          "links": [
+            111,
+            114
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy indexAnything"
+      },
+      "widgets_values": [
+        0
+      ]
+    },
+    {
+      "id": 52,
+      "type": "easy showAnything",
+      "pos": [
+        910.6354874207512,
+        -170.69313246910292
+      ],
+      "size": [
+        232.93289623141027,
+        76
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "anything",
+          "shape": 7,
+          "type": "*",
+          "link": 111
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "*",
+          "links": []
+        }
+      ],
+      "title": "原视频中的序号",
+      "properties": {
+        "cnr_id": "comfyui-easy-use",
+        "ver": "1.3.6",
+        "Node name for S&R": "easy showAnything"
+      },
+      "widgets_values": [
+        "138"
       ]
     }
   ],
   "links": [
     [
-      1,
-      1,
+      14,
+      7,
       0,
-      2,
+      12,
       0,
       "IMAGE"
     ],
     [
-      2,
-      2,
+      15,
+      10,
       0,
+      12,
+      1,
+      "INT"
+    ],
+    [
+      18,
+      14,
+      0,
+      12,
+      2,
+      "INT"
+    ],
+    [
+      19,
+      12,
+      0,
+      15,
+      0,
+      "IMAGE"
+    ],
+    [
+      20,
+      7,
       3,
+      16,
+      0,
+      "VHS_VIDEOINFO"
+    ],
+    [
+      21,
+      16,
+      5,
+      15,
+      4,
+      "FLOAT"
+    ],
+    [
+      82,
+      7,
+      0,
+      33,
+      0,
+      "IMAGE"
+    ],
+    [
+      83,
+      33,
+      0,
+      4,
       0,
       "STRING"
+    ],
+    [
+      86,
+      33,
+      1,
+      17,
+      0,
+      "STRING"
+    ],
+    [
+      95,
+      33,
+      1,
+      39,
+      0,
+      "STRING"
+    ],
+    [
+      97,
+      39,
+      0,
+      40,
+      0,
+      "IMAGE"
+    ],
+    [
+      98,
+      40,
+      0,
+      36,
+      0,
+      "IMAGE"
+    ],
+    [
+      99,
+      17,
+      0,
+      42,
+      0,
+      "STRING"
+    ],
+    [
+      100,
+      42,
+      0,
+      41,
+      2,
+      "STRING"
+    ],
+    [
+      101,
+      41,
+      0,
+      43,
+      0,
+      "IMAGE"
+    ],
+    [
+      102,
+      16,
+      5,
+      43,
+      4,
+      "FLOAT"
+    ],
+    [
+      104,
+      39,
+      1,
+      45,
+      0,
+      "STRING"
+    ],
+    [
+      105,
+      7,
+      0,
+      46,
+      0,
+      "IMAGE"
+    ],
+    [
+      107,
+      46,
+      0,
+      47,
+      0,
+      "IMAGE"
+    ],
+    [
+      109,
+      4,
+      0,
+      10,
+      0,
+      "STRING"
+    ],
+    [
+      110,
+      4,
+      0,
+      14,
+      0,
+      "STRING"
+    ],
+    [
+      111,
+      45,
+      0,
+      52,
+      0,
+      "*"
+    ],
+    [
+      114,
+      45,
+      0,
+      46,
+      1,
+      "INT"
     ]
   ],
   "groups": [
     {
-      "title": "Video Actor Extract (VHS)",
+      "id": 1,
+      "title": "每个演员的镜头片段",
       "bounding": [
-        80,
-        60,
-        1340,
-        300
+        -212.01298945540154,
+        17.968044018704873,
+        2704.613920157814,
+        915.2424915527534
       ],
       "color": "#3f789e",
-      "font_size": 24
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "选取演员",
+      "bounding": [
+        -25.997130108930037,
+        -663.3249635498719,
+        362.08920474033266,
+        397.28235771573736
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "主节点",
+      "bounding": [
+        -925.2231052180729,
+        -1154.7094304131854,
+        480.3439097133936,
+        496.4089298206619
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 5,
+      "title": "视频输入",
+      "bounding": [
+        -1792.2075488094324,
+        -770.1684350497952,
+        617.982082591655,
+        551.7533671602491
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 6,
+      "title": "预览某个演员被抽取出来的绿幕视频（已自动拼接不连续片段）",
+      "bounding": [
+        -94.80610612941878,
+        -1360.009023936837,
+        1556.957990270901,
+        494.46081565624934
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 7,
+      "title": "取最佳镜头图片（绿幕）",
+      "bounding": [
+        551.2324804189176,
+        -772.8350273419792,
+        659.9678407398932,
+        341.6
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "id": 8,
+      "title": "取最佳照片（原视频中的画面）",
+      "bounding": [
+        530.9346792435284,
+        -386.0672153310392,
+        1517.1663726878642,
+        341.6
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
     }
   ],
   "config": {},
   "extra": {
     "ds": {
-      "scale": 1,
+      "scale": 0.2853116706110022,
       "offset": [
-        0,
-        0
+        2588.1339775996166,
+        1829.3119797720697
       ]
     },
-    "frontendVersion": "1.37.11"
+    "frontendVersion": "1.37.11",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "workflowRendererVersion": "LG"
   },
   "version": 0.4
 }

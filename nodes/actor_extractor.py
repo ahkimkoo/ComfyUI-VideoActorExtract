@@ -217,7 +217,7 @@ def _actor_to_synthetic_records(
     from pipeline.tracker import FrameRecord
 
     records = []
-    for frame_idx, masked_frame, area in actor.frames:
+    for frame_idx, masked_frame, area, bbox_area in actor.frames:
         # Compute bbox from non-green pixels in the masked frame
         # Green = (0, 255, 0) in BGR
         non_green = (
@@ -583,8 +583,8 @@ class VideoActorExtractor:
                         subtrack_frame_indices = set(r.frame_idx for r in records)
 
                         sub_frames = [
-                            (fi, frame, area)
-                            for fi, frame, area in original_actor.frames
+                            (fi, frame, area, bbox_area)
+                            for fi, frame, area, bbox_area in original_actor.frames
                             if fi in subtrack_frame_indices
                         ]
 
@@ -673,33 +673,46 @@ class VideoActorExtractor:
 
         for i, actor_id in enumerate(actor_ids_sorted):
             # Merge all frames from all mask tracks belonging to this identity
-            actor_all_frames: List[Tuple[int, np.ndarray, int]] = []
+            actor_all_frames: List[Tuple[int, np.ndarray, int, int]] = []
             for aid in identity_to_actors[actor_id]:
                 actor_all_frames.extend(long_actors[aid].frames)
 
             if not actor_all_frames:
                 continue
 
-            # Sort by frame_idx and deduplicate (keep highest area for same frame)
-            frame_best: Dict[int, Tuple[np.ndarray, int]] = {}
-            for fi, masked, area in actor_all_frames:
-                if fi not in frame_best or area > frame_best[fi][1]:
-                    frame_best[fi] = (masked, area)
+            # Sort by frame_idx and deduplicate (keep largest bbox_area for same frame)
+            frame_best: Dict[int, Tuple[np.ndarray, int, int]] = {}
+            for fi, masked, area, bbox_area in actor_all_frames:
+                if fi not in frame_best or bbox_area > frame_best[fi][2]:
+                    frame_best[fi] = (masked, area, bbox_area)
 
             actor_all_frames = sorted(
-                [(fi, masked, area) for fi, (masked, area) in frame_best.items()],
+                [
+                    (fi, masked, area, bbox_area)
+                    for fi, (masked, area, bbox_area) in frame_best.items()
+                ],
                 key=lambda x: x[0],
             )
 
-            # Save top 5 preview frames by mask area (descending) to disk
-            top5 = sorted(actor_all_frames, key=lambda x: x[2], reverse=True)[:5]
-            for k, (_, masked_bgr, _) in enumerate(top5):
+            # Save top 5 preview frames by bbox area (descending) to disk
+            # bbox area approximates person/face size in frame
+            top5 = sorted(actor_all_frames, key=lambda x: x[3], reverse=True)[:5]
+            preview_frame_indexes = []
+            for k, (fi, masked_bgr, _, _) in enumerate(top5):
                 preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.jpg")
                 cv2.imwrite(preview_path, masked_bgr)
+                preview_frame_indexes.append(fi)
+
+            # Save frame indexes for SelectActorPreview to read
+            indexes_path = os.path.join(preview_dir, f"actor_{i}_indexes.json")
+            with open(indexes_path, "w") as f:
+                json.dump(preview_frame_indexes, f)
 
             # Build continuous segments with interpolation
+            # _build_continuous_segments expects (frame_idx, frame, mask_area)
+            segment_frames_3t = [(fi, fr, ar) for fi, fr, ar, _ in actor_all_frames]
             segments_frames, segments_info = _build_continuous_segments(
-                actor_all_frames, max_gap=30, interp_gap=2
+                segment_frames_3t, max_gap=30, interp_gap=2
             )
 
             if not segments_frames:
