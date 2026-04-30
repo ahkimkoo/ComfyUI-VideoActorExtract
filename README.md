@@ -6,7 +6,7 @@
 - 逐帧人物分割（YOLOv8-seg）
 - 质心距离多目标追踪（MaskTracker）
 - 基于人脸识别的身份聚类（InsightFace），支持跨时段合并 + 共现互斥
-- 纯绿幕背景输出（#00FF00）
+- 多种抠像背景可选（绿、蓝、黑、白），默认绿色
 - 多段出场自动合并为单个视频
 - JSON 结构化元数据（帧范围、时间戳）
 
@@ -21,7 +21,7 @@
 3. **身份聚类** — 使用 InsightFace 提取人脸特征，将同一人不同时间段的 track 合并为同一个 actor
    - **共现互斥约束**：同一帧出现的两个人物绝不会合并为同一人
    - **跨时段合并**：人物消失后重新出现，自动合并到同一 actor
-4. **绿幕抠图** — 将人物轮廓外的区域替换为纯绿色背景
+4. **抠像输出** — 将人物轮廓外的区域替换为自定义纯色背景（绿/蓝/黑/白）
 5. **视频编码** — 同一 actor 的所有出场段合并为一个 MP4 文件
 6. **元数据输出** — 生成 JSON 文件，记录每个 actor 的出镜时间段
 
@@ -29,7 +29,7 @@
 
 - 影视剪辑：快速提取每个角色的所有镜头
 - 视频分析：统计每个人物的出场时长
-- 内容创作：绿幕抠图用于二次创作
+- 内容创作：透明/绿幕抠图用于二次创作
 - 人脸分析：按人物分组后进一步分析表情/动作
 
 ---
@@ -54,7 +54,7 @@
 │         ▼                                                            │
 │  ┌──────────────┐                                                    │
 │  │  MaskTracker   │ 质心距离追踪, 帧间关联                              │
-│  │  (帧间追踪)     │ 输出: {actor_id: [(frame_idx, masked_frame, area)]}│
+│  │  (帧间追踪)     │ 输出: {actor_id: [(frame_idx, bool_mask, area)]}    │
 │  └──────┬───────┘                                                    │
 │         │                                                            │
 │         ▼                                                            │
@@ -179,6 +179,8 @@ pip install -r requirements.txt
 
 ### 3. 下载模型
 
+> **模型会自动下载**：首次运行时，插件会自动检测并下载缺失的模型文件（YOLOv8 和 InsightFace buffalo_l）。如果自动下载失败，可以手动按以下步骤操作。
+
 所有模型文件需要放到 `ComfyUI/models/video-actor-extract/` 目录下。
 
 #### 3.1 YOLOv8 检测模型 + 分割模型
@@ -260,6 +262,8 @@ ComfyUI/models/video-actor-extract/
 | `max_actors` | INT | — | `10` | 最大检测人数 (1-50) |
 | `face_threshold` | FLOAT | — | `0.6` | 人脸相似度聚类阈值 (0.1-0.99)。越高越严格，越不容易误合并 |
 | `min_track_length` | INT | — | `5` | 最小追踪帧数 (1-100)。低于此值的 track 会被过滤掉 |
+| `skip_every_n` | INT | — | `1` | 每隔 N 帧处理一次 (1-30)。1=全部帧，2=每隔一帧，越大越快但精度越低 |
+| `bg_color` | COMBO | — | `green` | 抠像背景色：`green`(绿，默认) / `blue`(蓝) / `black`(黑) / `white`(白) |
 
 **输出**
 
@@ -273,18 +277,18 @@ ComfyUI/models/video-actor-extract/
 
 ```
 {output_dir}/
-├── actor_0.mp4              # 第一个人物的绿幕视频
-├── actor_1.mp4              # 第二个人物的绿幕视频
+├── actor_0.mp4 (or .webm)   # 第一个人物的抠像视频
+├── actor_1.mp4              # 第二个人物的抠像视频
 ├── ...
 ├── actor_info.json          # 结构化元数据（所有 actor）
 └── previews/
-    ├── actor_0_0.jpg       # actor_0 的第 1 张预览（按 bbox 面积降序）
-    ├── actor_0_1.jpg       # actor_0 的第 2 张预览
-    ├── actor_0_2.jpg       # ...
-    ├── actor_0_3.jpg
-    ├── actor_0_4.jpg       # actor_0 的第 5 张预览
+    ├── actor_0_0.png       # actor_0 的第 1 张预览（按人脸面积降序，带 alpha 通道）
+    ├── actor_0_1.png       # actor_0 的第 2 张预览
+    ├── actor_0_2.png
+    ├── actor_0_3.png
+    ├── actor_0_4.png       # actor_0 的第 5 张预览
     ├── actor_0_indexes.json # actor_0 预览帧在原视频中的帧索引 [22, 32, 72, 23, 24]
-    ├── actor_1_0.jpg
+    ├── actor_1_0.png
     ├── ...
     └── actor_1_indexes.json
 ```
@@ -317,7 +321,7 @@ VHS_LoadVideoPath → VideoActorExtractor → (隐式保存文件到磁盘)
 | `images` | IMAGE | 预览图 batch `[N, H, W, 3]` (RGB, float32, 0-1)。N 通常为 5，但如果该 actor 出镜帧不足 5 帧则更少 |
 | `indexes` | INT[] | 预览帧在原视频中的帧索引列表。例如 `[22, 32, 72, 23, 24]` 表示第 1 张预览图来自原视频第 22 帧 |
 
-> 预览图按人物在画面中的 bbox 面积（近似人像/面部大小）降序排列，选取最大的 5 帧。
+> 预览图按 InsightFace 检测到的人脸面积降序排列，选取人脸最大的 5 帧。仅包含成功检测到人脸的帧。
 
 **典型连接方式**
 
@@ -403,12 +407,12 @@ VideoActorExtractor → SelectActorPreview → PreviewImage (查看预览图)
 
 ```
 {uuid}/
-├── actor_0.mp4              # 第一个人物的绿幕视频
-├── actor_1.mp4              # 第二个人物的绿幕视频
+├── actor_0.mp4              # 第一个人物的抠像视频
+├── actor_1.mp4              # 第二个人物的抠像视频
 ├── ...
 ├── actor_info.json          # 结构化元数据（所有 actor）
 └── previews/
-    ├── actor_0_0.jpg       # actor_0 预览图（按 bbox 面积降序取前 5）
+    ├── actor_0_0.jpg       # actor_0 预览图（按人脸面积降序取前 5）
     ├── actor_0_1.jpg
     ├── actor_0_2.jpg
     ├── actor_0_3.jpg
@@ -488,8 +492,14 @@ wf = {
                 'video_path': 'your_video.mp4',
                 'max_actors': 5,
                 'face_threshold': 0.6,
-                'min_track_length': 5
+                'min_track_length': 5,
+                'skip_every_n': 1,
+                'bg_color': 'green',
             }
+        },
+        '36': {
+            'class_type': 'DF_To_text_(Debug)',
+            'inputs': {'ANY': ['33', 1]}
         },
         '34': {
             'class_type': 'SelectActorPreview',
@@ -576,7 +586,7 @@ ComfyUI 控制台会输出详细日志：
 | 人脸识别 | 依赖面部可见，全程无正面的人物会被分配独立 ID |
 | 建议视频时长 | ≤ 5 分钟 |
 | 建议同时人数 | ≤ 5 人 |
-| 内存占用 | 全帧加载到内存，大视频需要足够 RAM |
+| 内存占用 | 帧逐帧处理，但大视频仍需足够 RAM；可用 skip_every_n 降低内存压力 |
 
 ---
 
