@@ -80,7 +80,7 @@ class IdentityCluster:
                     "[Identity] InsightFace buffalo_l model not found locally, skipping face clustering"
                 )
                 print(
-                    "[Identity] Run: python -c \"from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l').prepare(ctx_id=-1)\""
+                    "[Identity] Run: python -c \"from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l').prepare(ctx_id=0, det_size=(320,320))\""
                 )
                 print("[Identity] to download the model (~350MB)")
                 self._loaded = False
@@ -91,8 +91,15 @@ class IdentityCluster:
                 name="buffalo_l",
                 allowed_modules=["detection", "recognition"],
                 root=model_dir,
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
             )
-            self.model.prepare(ctx_id=-1, det_size=(640, 640))  # ctx_id=-1 for CPU
+            # ctx_id=0 enables GPU if onnxruntime-gpu is installed;
+            # det_size=320 reduces face detection cost on GPU with minimal accuracy loss
+            try:
+                self.model.prepare(ctx_id=0, det_size=(320, 320))
+            except Exception:
+                self.model.prepare(ctx_id=-1, det_size=(320, 320))
+                print("[Identity] CUDA not available for InsightFace, using CPU")
             self._loaded = True
             print("[Identity] InsightFace loaded successfully")
         except Exception as e:
