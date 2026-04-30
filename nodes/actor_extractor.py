@@ -753,24 +753,17 @@ class VideoActorExtractor:
             top5 = sorted(
                 face_detected_frames, key=lambda x: actor_face_areas[x[0]], reverse=True
             )[:5]
+            # Previews always saved as PNG with alpha channel
             preview_frame_indexes = []
             for k, (fi, bool_mask, _, _) in enumerate(top5):
                 frame_bgr = frame_lookup.get(fi)
                 if frame_bgr is None:
                     continue
-                if bg_color == "transparent":
-                    # Save as PNG with alpha channel
-                    bgra = np.zeros((img_h, img_w, 4), dtype=np.uint8)
-                    bgra[bool_mask, :3] = frame_bgr[bool_mask]
-                    bgra[bool_mask, 3] = 255
-                    preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.png")
-                    cv2.imwrite(preview_path, bgra)
-                else:
-                    bg_bgr = BG_COLOR_MAP.get(bg_color, BG_COLOR_GREEN)
-                    masked_bgr = frame_bgr.copy()
-                    masked_bgr[~bool_mask] = bg_bgr
-                    preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.jpg")
-                    cv2.imwrite(preview_path, masked_bgr)
+                bgra = np.zeros((img_h, img_w, 4), dtype=np.uint8)
+                bgra[bool_mask, :3] = frame_bgr[bool_mask]
+                bgra[bool_mask, 3] = 255
+                preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.png")
+                cv2.imwrite(preview_path, bgra)
                 preview_frame_indexes.append(fi)
 
             # Save frame indexes for SelectActorPreview to read

@@ -42,30 +42,46 @@ class SelectActorPreview:
 
         Returns:
             Tuple of:
-            - 4D tensor [N, H, W, 3] RGB float32 in 0-1 range.
+            - 4D tensor [N, H, W, 4] RGBA float32 in 0-1 range.
             - List of frame indexes: [frame_idx_0, frame_idx_1, ...]
         """
         import cv2
 
-        pattern = os.path.join(output_dir, "previews", f"actor_{actor_index}_*.jpg")
+        # Previews are now always PNG with alpha channel
+        pattern = os.path.join(output_dir, "previews", f"actor_{actor_index}_*.png")
         paths = sorted(glob.glob(pattern))
 
         if not paths:
+            # Fallback: check for legacy .jpg previews
+            pattern_jpg = os.path.join(
+                output_dir, "previews", f"actor_{actor_index}_*.jpg"
+            )
+            paths = sorted(glob.glob(pattern_jpg))
+
+        if not paths:
             print(f"[SelectActorPreview] No previews found: {pattern}")
-            return (torch.zeros(1, 512, 512, 3, dtype=torch.float32), [])
+            return (torch.zeros(1, 512, 512, 4, dtype=torch.float32), [])
 
         frames = []
         for p in paths:
-            img_bgr = cv2.imread(p)
-            if img_bgr is None:
+            img_bgra = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+            if img_bgra is None:
                 continue
-            img_rgb = img_bgr[:, :, ::-1].copy()
-            frames.append(img_rgb.astype(np.float32) / 255.0)
+            if img_bgra.ndim == 2:
+                # Grayscale — convert to BGRA
+                img_bgra = cv2.cvtColor(img_bgra, cv2.COLOR_GRAY2BGRA)
+            elif img_bgra.shape[2] == 3:
+                # BGR without alpha — add full opacity
+                alpha = np.full((*img_bgra.shape[:2], 255), dtype=np.uint8)
+                img_bgra = np.dstack([img_bgra, alpha])
+            # BGRA -> RGBA
+            img_rgba = img_bgra[:, :, [2, 1, 0, 3]].copy()
+            frames.append(img_rgba.astype(np.float32) / 255.0)
 
         if not frames:
-            return (torch.zeros(1, 512, 512, 3, dtype=torch.float32), [])
+            return (torch.zeros(1, 512, 512, 4, dtype=torch.float32), [])
 
-        tensor = torch.from_numpy(np.stack(frames))  # [N, H, W, 3]
+        tensor = torch.from_numpy(np.stack(frames))  # [N, H, W, 4]
 
         # Read frame indexes from the JSON file written by VideoActorExtractor
         indexes_path = os.path.join(
