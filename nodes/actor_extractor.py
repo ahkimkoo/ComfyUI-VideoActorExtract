@@ -49,7 +49,7 @@ from pipeline.identity import IdentityCluster
 
 # face_threshold is kept for backward compatibility but identity clustering
 # now uses spatial-temporal constraints to prevent merging co-occurring tracks.
-from pipeline.merger import merge_segments, merge_segments_rgba, generate_actor_json
+from pipeline.merger import merge_segments, generate_actor_json
 
 # PersonSegmenter may not exist yet (parallel task creating it)
 try:
@@ -310,8 +310,8 @@ class VideoActorExtractor:
                     },
                 ),
                 "bg_color": (
-                    ["transparent", "green", "blue", "black", "white"],
-                    {"default": "transparent"},
+                    ["green", "blue", "black", "white"],
+                    {"default": "green"},
                 ),
             },
         }
@@ -331,7 +331,7 @@ class VideoActorExtractor:
         face_threshold: float = DEFAULT_FACE_THRESHOLD,
         min_track_length: int = DEFAULT_MIN_TRACK_LENGTH,
         skip_every_n: int = 1,
-        bg_color: str = "transparent",
+        bg_color: str = "green",
     ) -> Tuple[str, str, int]:
         """
         Run the full actor extraction pipeline.
@@ -753,17 +753,17 @@ class VideoActorExtractor:
             top5 = sorted(
                 face_detected_frames, key=lambda x: actor_face_areas[x[0]], reverse=True
             )[:5]
-            # Previews always saved as PNG with alpha channel
+            # Previews saved as JPG with selected bg color
+            bg_bgr = BG_COLOR_MAP.get(bg_color, BG_COLOR_GREEN)
             preview_frame_indexes = []
             for k, (fi, bool_mask, _, _) in enumerate(top5):
                 frame_bgr = frame_lookup.get(fi)
                 if frame_bgr is None:
                     continue
-                bgra = np.zeros((img_h, img_w, 4), dtype=np.uint8)
-                bgra[bool_mask, :3] = frame_bgr[bool_mask]
-                bgra[bool_mask, 3] = 255
-                preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.png")
-                cv2.imwrite(preview_path, bgra)
+                masked_bgr = frame_bgr.copy()
+                masked_bgr[~bool_mask] = bg_bgr
+                preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.jpg")
+                cv2.imwrite(preview_path, masked_bgr)
                 preview_frame_indexes.append(fi)
 
             # Save frame indexes for SelectActorPreview to read
@@ -784,50 +784,26 @@ class VideoActorExtractor:
             if not segments_data:
                 continue
 
-            # Convert bool-mask segments to frames for encoding
-            if bg_color == "transparent":
-                # Create RGBA frames: person pixels opaque, background transparent
-                segments_rgba: List[List[np.ndarray]] = []
-                for seg in segments_data:
-                    rgba_frames = []
-                    for fi, bool_mask, _ in seg:
-                        frame_bgr = frame_lookup.get(fi)
-                        if frame_bgr is None:
-                            frame_bgr = np.zeros((img_h, img_w, 3), dtype=np.uint8)
-                        bgra = np.zeros((img_h, img_w, 4), dtype=np.uint8)
-                        bgra[bool_mask, :3] = frame_bgr[bool_mask]
-                        bgra[bool_mask, 3] = 255
-                        rgba_frames.append(bgra)
-                    segments_rgba.append(rgba_frames)
+            # Convert bool-mask segments to BGR frames for encoding
+            segments_bgr: List[List[np.ndarray]] = []
+            for seg in segments_data:
+                bgr_frames = []
+                for fi, bool_mask, _ in seg:
+                    frame_bgr = frame_lookup.get(fi)
+                    if frame_bgr is None:
+                        frame_bgr = np.full((img_h, img_w, 3), bg_bgr, dtype=np.uint8)
+                    composited = frame_bgr.copy()
+                    composited[~bool_mask] = bg_bgr
+                    bgr_frames.append(composited)
+                segments_bgr.append(bgr_frames)
 
-                output_video_path = os.path.join(output_dir, f"{actor_id}.webm")
-                success = merge_segments_rgba(
-                    segments_rgba, fps=fps, output_path=output_video_path
-                )
-            else:
-                # Colored background compositing
-                bg_bgr = BG_COLOR_MAP.get(bg_color, BG_COLOR_GREEN)
-                segments_bgr: List[List[np.ndarray]] = []
-                for seg in segments_data:
-                    bgr_frames = []
-                    for fi, bool_mask, _ in seg:
-                        frame_bgr = frame_lookup.get(fi)
-                        if frame_bgr is None:
-                            frame_bgr = np.full(
-                                (img_h, img_w, 3), bg_bgr, dtype=np.uint8
-                            )
-                        composited = frame_bgr.copy()
-                        composited[~bool_mask] = bg_bgr
-                        bgr_frames.append(composited)
-                    segments_bgr.append(bgr_frames)
-
-                output_video_path = os.path.join(output_dir, f"{actor_id}.mp4")
-                success = merge_segments(
-                    segments_bgr,
-                    fps=fps,
-                    output_path=output_video_path,
-                    gap_sec=SEGMENT_GAP_SEC,
-                )
+            output_video_path = os.path.join(output_dir, f"{actor_id}.mp4")
+            success = merge_segments(
+                segments_bgr,
+                fps=fps,
+                output_path=output_video_path,
+                gap_sec=SEGMENT_GAP_SEC,
+            )
 
             if success:
                 total_output_frames = sum(s["frame_count"] for s in segments_info)
