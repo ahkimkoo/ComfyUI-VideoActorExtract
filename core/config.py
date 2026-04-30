@@ -27,6 +27,19 @@ YOLO_INFER_SIZE = 640
 # Green screen
 GREEN_SCREEN_COLOR = (0, 255, 0)  # BGR pure green
 
+# Background colors (BGR format)
+BG_COLOR_GREEN = (0, 255, 0)
+BG_COLOR_BLUE = (255, 0, 0)
+BG_COLOR_BLACK = (0, 0, 0)
+BG_COLOR_WHITE = (255, 255, 255)
+
+BG_COLOR_MAP = {
+    "green": BG_COLOR_GREEN,
+    "blue": BG_COLOR_BLUE,
+    "black": BG_COLOR_BLACK,
+    "white": BG_COLOR_WHITE,
+}
+
 # Segment gap (green screen frames between merged segments)
 SEGMENT_GAP_SEC = 0.5
 SEGMENT_GAP_FRAMES_DEFAULT = 15  # will be computed from fps
