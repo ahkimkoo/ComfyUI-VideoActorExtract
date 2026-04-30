@@ -1,10 +1,17 @@
 [project]
 name = "ComfyUI-VideoActorExtract"
-version = "0.1.0"
-description = "Extract individual actors from video with green screen background"
+version = "1.0.0"
+description = "Extract individual actors from video with green screen background, face-based identity clustering, and structured metadata output"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache-2.0"}
+license = {text = "MIT"}
 
 [project.optional-dependencies]
 dev = ["pytest"]
+
+[project.urls]
+Repository = "https://github.com/ahkimkoo/ComfyUI-VideoActorExtract"
+
+[tool.comfy]
+PublisherId = "ahkimkoo"
+DisplayName = "Video Actor Extract"
