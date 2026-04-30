@@ -112,34 +112,40 @@ def _resolve_model_path(name: str) -> str:
 
 def _build_continuous_segments(
     actor_frames: List[Tuple[int, np.ndarray, int]],
+    frame_shape: Tuple[int, int],
     max_gap: int = 30,
     interp_gap: int = 2,
-) -> Tuple[List[List[np.ndarray]], List[dict]]:
+) -> Tuple[List[List[Tuple[int, np.ndarray, int]]], List[dict]]:
     """Build continuous output segments from sparse frame detections.
 
     For each actor:
     1. Sort detections by frame_idx.
     2. Split into segments where gap > max_gap frames.
-    3. Within each segment, interpolate small gaps (≤ interp_gap frames)
-       by duplicating the previous available masked frame.
-    4. Output continuous frame list where frame_count == end_frame - start_frame + 1.
+    3. Within each segment, interpolate small gaps (<= interp_gap frames)
+       by duplicating the previous available bool mask.
+    4. Output continuous segment list where frame_count == end_frame - start_frame + 1.
+
+    Green screen compositing is NOT done here — it happens later in the
+    encoding step so we avoid storing full BGR frames in memory.
 
     Args:
-        actor_frames: Sorted list of (frame_idx, masked_frame, mask_area).
+        actor_frames: Sorted list of (frame_idx, bool_mask, mask_area).
+        frame_shape: (height, width) of original frames, used for green
+            fallback during interpolation.
         max_gap: Gap in frames that triggers a new segment.
         interp_gap: Max gap within a segment to interpolate by duplication.
 
     Returns:
         (segments_frames, segments_info) where:
-        - segments_frames: List of frame-lists (one per segment), each containing
-          continuous frames from start_frame to end_frame.
+        - segments_frames: List of segment-lists (one per segment), each
+          containing (frame_idx, bool_mask, mask_area) tuples — continuous
+          from start_frame to end_frame.
         - segments_info: List of dicts with start_frame, end_frame, frame_count.
     """
     if not actor_frames:
         return [], []
 
     # --- Step 1: Group into segments by max_gap ---
-    # Each segment is a list of (frame_idx, masked_frame, area) entries
     raw_segments: List[List[Tuple[int, np.ndarray, int]]] = []
     current_seg: List[Tuple[int, np.ndarray, int]] = [actor_frames[0]]
 
@@ -152,7 +158,8 @@ def _build_continuous_segments(
     raw_segments.append(current_seg)
 
     # --- Step 2: Interpolate each segment to be continuous ---
-    segments_frames: List[List[np.ndarray]] = []
+    h, w = frame_shape
+    segments_frames: List[List[Tuple[int, np.ndarray, int]]] = []
     segments_info: List[dict] = []
 
     for seg in raw_segments:
@@ -162,33 +169,31 @@ def _build_continuous_segments(
         start_frame = seg[0][0]
         end_frame = seg[-1][0]
 
-        # Build a lookup: frame_idx -> (masked_frame, area)
+        # Build a lookup: frame_idx -> (bool_mask, area)
         frame_map: Dict[int, Tuple[np.ndarray, int]] = {
             entry[0]: (entry[1], entry[2]) for entry in seg
         }
 
         # Walk from start_frame to end_frame, interpolating small gaps
-        continuous_frames: List[np.ndarray] = []
-        prev_frame: Optional[np.ndarray] = None
+        continuous: List[Tuple[int, np.ndarray, int]] = []
+        prev_mask: Optional[np.ndarray] = None
 
         for fi in range(start_frame, end_frame + 1):
             if fi in frame_map:
-                masked, _ = frame_map[fi]
-                continuous_frames.append(masked)
-                prev_frame = masked
-            elif prev_frame is not None:
-                # Duplicate the previous frame (gap interpolation)
-                continuous_frames.append(prev_frame.copy())
+                mask, area = frame_map[fi]
+                continuous.append((fi, mask, area))
+                prev_mask = mask
+            elif prev_mask is not None:
+                # Duplicate the previous bool mask (gap interpolation)
+                continuous.append((fi, prev_mask, int(prev_mask.sum())))
             else:
-                # Shouldn't happen (start_frame is always in frame_map),
-                # but fallback to green frame
-                h, w = seg[0][1].shape[:2]
-                green = np.full((h, w, 3), (0, 255, 0), dtype=np.uint8)
-                continuous_frames.append(green)
-                prev_frame = green
+                # Fallback: empty mask (all False)
+                empty_mask = np.zeros((h, w), dtype=bool)
+                continuous.append((fi, empty_mask, 0))
+                prev_mask = empty_mask
 
-        if continuous_frames:
-            segments_frames.append(continuous_frames)
+        if continuous:
+            segments_frames.append(continuous)
             segments_info.append(
                 {
                     "start_frame": start_frame,
@@ -206,10 +211,10 @@ def _actor_to_synthetic_records(
     """Build approximate FrameRecord-like objects from a MaskActor's data.
 
     For identity clustering, we compute an approximate bounding box from
-    the masked frame content (person pixels vs green pixels).
+    the stored bool mask directly (True = person pixel).
 
     Args:
-        actor: MaskActor with frames list of (frame_idx, masked_frame, area).
+        actor: MaskActor with frames list of (frame_idx, bool_mask, area, bbox_area).
 
     Returns:
         List of FrameRecord-like objects for identity clustering.
@@ -217,15 +222,9 @@ def _actor_to_synthetic_records(
     from pipeline.tracker import FrameRecord
 
     records = []
-    for frame_idx, masked_frame, area, bbox_area in actor.frames:
-        # Compute bbox from non-green pixels in the masked frame
-        # Green = (0, 255, 0) in BGR
-        non_green = (
-            (masked_frame[:, :, 0] != 0)
-            | (masked_frame[:, :, 1] != 255)
-            | (masked_frame[:, :, 2] != 0)
-        )
-        ys, xs = np.where(non_green)
+    for frame_idx, mask, area, bbox_area in actor.frames:
+        # Compute bbox from the bool mask directly
+        ys, xs = np.where(mask)
         if len(ys) == 0:
             continue
         x1, y1, x2, y2 = (
@@ -298,6 +297,16 @@ class VideoActorExtractor:
                     "INT",
                     {"default": DEFAULT_MIN_TRACK_LENGTH, "min": 1, "max": 100},
                 ),
+                "skip_every_n": (
+                    "INT",
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 30,
+                        "step": 1,
+                        "tooltip": "Process every Nth frame. 1=all frames, 2=every other frame, etc. Higher values are faster but less precise.",
+                    },
+                ),
             },
         }
 
@@ -315,6 +324,7 @@ class VideoActorExtractor:
         max_actors: int = DEFAULT_MAX_ACTORS,
         face_threshold: float = DEFAULT_FACE_THRESHOLD,
         min_track_length: int = DEFAULT_MIN_TRACK_LENGTH,
+        skip_every_n: int = 1,
     ) -> Tuple[str, str, int]:
         """
         Run the full actor extraction pipeline.
@@ -336,6 +346,7 @@ class VideoActorExtractor:
             max_actors: Maximum number of actors to detect (deprecated, kept for compat)
             face_threshold: Face similarity threshold (deprecated, kept for compat)
             min_track_length: Minimum number of frames for a valid track
+            skip_every_n: Process every Nth frame (1=all, 2=every other, etc.)
 
         Returns:
             (actor_info_json, output_dir, actor_count)
@@ -474,23 +485,40 @@ class VideoActorExtractor:
         # ----------------------------------------------------------------
         # Step 3: Process all frames — detect masks and track them
         # ----------------------------------------------------------------
-        print("[VideoActorExtract] Step 3: Detecting masks and tracking actors...")
+        actual_frames = list(range(0, num_frames, skip_every_n))
+        total_to_process = len(actual_frames)
+        print(
+            f"[VideoActorExtract] Step 3: Detecting masks and tracking actors..."
+            f" ({total_to_process}/{num_frames} frames, skip_every_n={skip_every_n})"
+        )
         t0 = time.time()
-        for frame_idx in range(num_frames):
+        t_detect = 0.0
+        t_track = 0.0
+        for frame_idx in actual_frames:
             frame_bgr = _get_frame_bgr(frame_idx)  # ~6MB per frame
-            masks = segmenter.detect_masks(frame_bgr)
-            mask_tracker.update(frame_idx, masks, frame_bgr, segmenter)
 
-            if (frame_idx + 1) % 50 == 0 or frame_idx == num_frames - 1:
+            t1 = time.time()
+            masks = segmenter.detect_masks(frame_bgr)
+            t_detect += time.time() - t1
+
+            t2 = time.time()
+            mask_tracker.update(frame_idx, masks)
+            t_track += time.time() - t2
+
+            done = actual_frames.index(frame_idx) + 1
+            if done % 50 == 0 or frame_idx == actual_frames[-1]:
                 elapsed = time.time() - t0
-                rate = (frame_idx + 1) / elapsed if elapsed > 0 else 0
+                rate = done / elapsed if elapsed > 0 else 0
                 print(
-                    f"  Processed {frame_idx + 1}/{num_frames} frames "
+                    f"  Processed {done}/{total_to_process} frames "
                     f"({elapsed:.1f}s, {rate:.1f} fps)"
                 )
 
         elapsed_total = time.time() - t0
-        print(f"  Frame processing complete in {elapsed_total:.1f}s")
+        print(
+            f"  Frame processing complete in {elapsed_total:.1f}s "
+            f"(Detection: {t_detect:.1f}s, Tracking: {t_track:.1f}s)"
+        )
 
         # ----------------------------------------------------------------
         # Step 4: Finish tracking, get all MaskActors
@@ -700,10 +728,15 @@ class VideoActorExtractor:
             )
 
             # Save top 5 preview frames by bbox area (descending) to disk
-            # bbox area approximates person/face size in frame
+            # Apply green screen on-the-fly from bool mask + original frame
             top5 = sorted(actor_all_frames, key=lambda x: x[3], reverse=True)[:5]
             preview_frame_indexes = []
-            for k, (fi, masked_bgr, _, _) in enumerate(top5):
+            for k, (fi, bool_mask, _, _) in enumerate(top5):
+                frame_bgr = frame_lookup.get(fi)
+                if frame_bgr is None:
+                    continue
+                masked_bgr = frame_bgr.copy()
+                masked_bgr[~bool_mask] = (0, 255, 0)
                 preview_path = os.path.join(preview_dir, f"actor_{i}_{k}.jpg")
                 cv2.imwrite(preview_path, masked_bgr)
                 preview_frame_indexes.append(fi)
@@ -714,19 +747,38 @@ class VideoActorExtractor:
                 json.dump(preview_frame_indexes, f)
 
             # Build continuous segments with interpolation
-            # _build_continuous_segments expects (frame_idx, frame, mask_area)
-            segment_frames_3t = [(fi, fr, ar) for fi, fr, ar, _ in actor_all_frames]
-            segments_frames, segments_info = _build_continuous_segments(
-                segment_frames_3t, max_gap=30, interp_gap=2
+            # _build_continuous_segments expects (frame_idx, bool_mask, mask_area)
+            segment_input = [(fi, mask, area) for fi, mask, area, _ in actor_all_frames]
+            segments_data, segments_info = _build_continuous_segments(
+                segment_input,
+                frame_shape=(img_h, img_w),
+                max_gap=30,
+                interp_gap=2,
             )
 
-            if not segments_frames:
+            if not segments_data:
                 continue
+
+            # Convert bool-mask segments to BGR green-screened frames for encoding
+            segments_bgr: List[List[np.ndarray]] = []
+            for seg in segments_data:
+                bgr_frames = []
+                for fi, bool_mask, _ in seg:
+                    frame_bgr = frame_lookup.get(fi)
+                    if frame_bgr is None:
+                        # Fallback: pure green frame
+                        frame_bgr = np.full(
+                            (img_h, img_w, 3), (0, 255, 0), dtype=np.uint8
+                        )
+                    greened = frame_bgr.copy()
+                    greened[~bool_mask] = (0, 255, 0)
+                    bgr_frames.append(greened)
+                segments_bgr.append(bgr_frames)
 
             # Encode to video via merge_segments
             output_video_path = os.path.join(output_dir, f"{actor_id}.mp4")
             success = merge_segments(
-                segments_frames,
+                segments_bgr,
                 fps=fps,
                 output_path=output_video_path,
                 gap_sec=SEGMENT_GAP_SEC,

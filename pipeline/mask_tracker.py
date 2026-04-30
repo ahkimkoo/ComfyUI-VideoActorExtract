@@ -16,7 +16,7 @@ class MaskActor:
 
     Attributes:
         actor_id: Unique identifier for this actor.
-        frames: List of (frame_idx, masked_frame, mask_area) entries.
+        frames: List of (frame_idx, bool_mask, mask_area, bbox_area) entries.
         last_centroid: Most recent centroid (cx, cy) of the mask.
         last_frame_idx: Frame index of the most recent detection.
         closed: Whether this actor has been closed (no match for too long).
@@ -25,8 +25,8 @@ class MaskActor:
 
     actor_id: int
     frames: List[Tuple[int, np.ndarray, int, int]] = field(default_factory=list)
-    # Each entry: (frame_idx, masked_frame, mask_area, bbox_area)
-    # bbox_area = mask bounding box width * height (proxy for person/face size)
+    # Each entry: (frame_idx, bool_mask, mask_area, bbox_area)
+    # bool_mask is a boolean 2D array at original frame resolution
     last_centroid: Tuple[float, float] = (0.0, 0.0)
     last_frame_idx: int = -1
     closed: bool = False
@@ -91,16 +91,12 @@ class MaskTracker:
         self,
         frame_idx: int,
         masks: List[Tuple[int, np.ndarray]],
-        frame: np.ndarray,
-        segmenter,
     ) -> None:
         """Process all masks for a frame, assigning each to a MaskActor.
 
         Args:
             frame_idx: Current frame index.
             masks: List of (detection_idx, bool_mask) from PersonSegmenter.
-            frame: BGR frame numpy array.
-            segmenter: PersonSegmenter instance (for apply_mask).
         """
         if not masks:
             # No masks this frame — check for actors to close
@@ -163,14 +159,13 @@ class MaskTracker:
             if best_actor_id is not None and best_dist < self.match_threshold_px:
                 # Assign to existing actor
                 actor = self._actors[best_actor_id]
-                masked_frame = segmenter.apply_mask(frame, mask)
                 mbbox = self._compute_mask_bbox(mask)
                 bbox_area = (
                     int((mbbox[2] - mbbox[0]) * (mbbox[3] - mbbox[1]))
                     if mbbox
                     else area
                 )
-                actor.frames.append((frame_idx, masked_frame, area, bbox_area))
+                actor.frames.append((frame_idx, mask, area, bbox_area))
                 actor.last_centroid = centroid
                 actor.last_frame_idx = frame_idx
                 actor.frame_indices.add(frame_idx)
@@ -183,14 +178,13 @@ class MaskTracker:
                     last_frame_idx=frame_idx,
                 )
                 self._next_actor_id += 1
-                masked_frame = segmenter.apply_mask(frame, mask)
                 mbbox = self._compute_mask_bbox(mask)
                 bbox_area = (
                     int((mbbox[2] - mbbox[0]) * (mbbox[3] - mbbox[1]))
                     if mbbox
                     else area
                 )
-                actor.frames.append((frame_idx, masked_frame, area, bbox_area))
+                actor.frames.append((frame_idx, mask, area, bbox_area))
                 actor.frame_indices.add(frame_idx)
                 self._actors[actor.actor_id] = actor
                 matched_actor_ids.add(actor.actor_id)
@@ -240,8 +234,6 @@ class MaskTracker:
         Returns:
             {actor_id: [(frame_idx, x1, y1, x2, y2), ...]}
         """
-        # We need to recompute bboxes — but we only stored masked_frame, not raw mask.
-        # Instead, use centroid + approximate size from masked_frame content.
-        # A simpler approach: return None to signal "use centroid-only mode"
-        # The identity module will handle this.
+        # We store bool masks now, so bboxes can be recomputed directly.
+        # Return empty dict — identity module uses centroid-only mode.
         return {}

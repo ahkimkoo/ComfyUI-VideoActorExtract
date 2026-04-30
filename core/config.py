@@ -21,6 +21,9 @@ DEFAULT_FPS_SAMPLE = 3
 DEFAULT_MIN_TRACK_LENGTH = 5
 DEFAULT_MAX_ACTORS = 10
 
+# YOLO inference — longest-side target for downscaling before inference
+YOLO_INFER_SIZE = 640
+
 # Green screen
 GREEN_SCREEN_COLOR = (0, 255, 0)  # BGR pure green
 
