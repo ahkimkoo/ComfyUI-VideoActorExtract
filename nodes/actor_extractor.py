@@ -341,6 +341,11 @@ class VideoActorExtractor:
             (actor_info_json, output_dir, actor_count)
         """
 
+        # Check and auto-download missing models
+        from core.model_utils import ensure_models_exist
+
+        ensure_models_exist()
+
         output_dir = _get_comfyui_output_dir()
         print(f"[VideoActorExtract] Output directory: {output_dir}")
 
