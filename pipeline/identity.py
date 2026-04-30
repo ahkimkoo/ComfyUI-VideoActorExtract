@@ -25,6 +25,8 @@ class IdentityCluster:
         self.model = None
         self._loaded = False
         self.model_dir = model_dir
+        self._face_bbox_areas: Dict[int, Dict[int, int]] = {}
+        # {track_id: {frame_idx: face_bbox_area}}
 
     def _ensure_loaded(self):
         """Lazy-load InsightFace model."""
@@ -101,7 +103,7 @@ class IdentityCluster:
 
     def _get_face_embedding(
         self, frame: np.ndarray, bbox: BoundingBox
-    ) -> Optional[np.ndarray]:
+    ) -> Tuple[Optional[np.ndarray], Optional[int]]:
         """
         Extract face embedding from a cropped region of a frame.
         Tries multiple crop sizes to maximize face detection chances.
@@ -111,11 +113,12 @@ class IdentityCluster:
             bbox: Bounding box of the person
 
         Returns:
-            Face embedding vector or None if no face detected
+            Tuple of (face_embedding, face_bbox_area) where both are None
+            if no face detected. face_bbox_area is (x2-x1)*(y2-y1) in pixels.
         """
         self._ensure_loaded()
         if self.model is None:
-            return None
+            return None, None
 
         h, w = frame.shape[:2]
 
@@ -144,23 +147,36 @@ class IdentityCluster:
             if best_face.det_score < DEFAULT_MIN_FACE_CONFIDENCE:
                 continue
 
-            return best_face.embedding
+            face_area = int(
+                (best_face.bbox[2] - best_face.bbox[0])
+                * (best_face.bbox[3] - best_face.bbox[1])
+            )
+            return best_face.embedding, face_area
 
         # Fallback: try the full frame (for cases where bbox is very inaccurate)
         faces = self.model.get(frame)
         if faces:
             best_face = max(faces, key=lambda f: f.det_score)
             if best_face.det_score >= DEFAULT_MIN_FACE_CONFIDENCE:
-                return best_face.embedding
+                face_area = int(
+                    (best_face.bbox[2] - best_face.bbox[0])
+                    * (best_face.bbox[3] - best_face.bbox[1])
+                )
+                return best_face.embedding, face_area
 
-        return None
+        return None, None
 
     def _get_track_embedding_with_count(self, track_records, frames):
-        """Get aggregated face embedding for a track, returning (embedding, face_count)."""
+        """Get aggregated face embedding for a track.
+
+        Returns:
+            (embedding, face_count, face_areas) where face_areas maps
+            frame_idx -> face_bbox_area in pixels.
+        """
         embeddings = []
         n = len(track_records)
         if n == 0:
-            return None, 0
+            return None, 0, {}
 
         # Sort records by mask area (descending) to prioritize frames where person is largest
         sorted_records = sorted(
@@ -191,23 +207,26 @@ class IdentityCluster:
                     sample_records.append(rec)
 
         face_count = 0
+        face_areas: Dict[int, int] = {}
         for rec in sample_records:
             frame = frames.get(rec.frame_idx, None)
             if frame is None:
                 continue
             bbox = BoundingBox(rec.x1, rec.y1, rec.x2, rec.y2)
-            emb = self._get_face_embedding(frame, bbox)
+            emb, face_area = self._get_face_embedding(frame, bbox)
             if emb is not None:
                 embeddings.append(emb)
                 face_count += 1
+                if face_area is not None:
+                    face_areas[rec.frame_idx] = face_area
 
         if not embeddings:
-            return None, face_count
+            return None, face_count, face_areas
 
         # Simple average of all successful embeddings
         avg_emb = np.mean(embeddings, axis=0)
         avg_emb = avg_emb / (np.linalg.norm(avg_emb) + 1e-8)
-        return avg_emb, face_count
+        return avg_emb, face_count, face_areas
 
     def cluster_tracks(
         self,
@@ -236,6 +255,9 @@ class IdentityCluster:
         """
         self._ensure_loaded()
 
+        # Reset face bbox areas for this clustering run
+        self._face_bbox_areas = {}
+
         # Filter out short tracks
         valid_tracks = {
             tid: recs
@@ -260,9 +282,11 @@ class IdentityCluster:
         face_detection_counts: Dict[int, int] = {}
 
         for tid, recs in valid_tracks.items():
-            emb = self._get_track_embedding_with_count(recs, frames)
-            track_embeddings[tid] = emb[0]
-            face_detection_counts[tid] = emb[1]
+            emb, count, face_areas = self._get_track_embedding_with_count(recs, frames)
+            track_embeddings[tid] = emb
+            face_detection_counts[tid] = count
+            if face_areas:
+                self._face_bbox_areas[tid] = face_areas
 
         # Debug: print face detection stats
         tracks_with_faces = sum(1 for e in track_embeddings.values() if e is not None)
@@ -511,6 +535,14 @@ class IdentityCluster:
         print(f"[Identity] Final: {len(set(track_to_actor.values()))} unique actors")
 
         return track_to_actor
+
+    def get_face_bbox_areas(self) -> Dict[int, Dict[int, int]]:
+        """Return face bbox areas detected during clustering.
+
+        Returns:
+            {track_id: {frame_idx: face_bbox_area_pixels}}
+        """
+        return self._face_bbox_areas
 
     def _merge_faceless_by_overlap(
         self,

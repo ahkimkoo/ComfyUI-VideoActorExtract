@@ -677,6 +677,9 @@ class VideoActorExtractor:
             max_lost_frames=DEFAULT_MAX_LOST_FRAMES,
         )
 
+        # Retrieve face bbox areas for preview sorting
+        face_bbox_areas = identity.get_face_bbox_areas()
+
         # Group mask actors by identity
         identity_to_actors: Dict[str, List[int]] = {}
         for aid, actor_id in actor_to_identity.items():
@@ -727,9 +730,18 @@ class VideoActorExtractor:
                 key=lambda x: x[0],
             )
 
-            # Save top 5 preview frames by bbox area (descending) to disk
+            # Save top 5 preview frames by face area (preferred) or mask bbox area (fallback)
             # Apply green screen on-the-fly from bool mask + original frame
-            top5 = sorted(actor_all_frames, key=lambda x: x[3], reverse=True)[:5]
+            actor_face_areas: Dict[int, int] = {}
+            for aid in identity_to_actors[actor_id]:
+                if aid in face_bbox_areas:
+                    actor_face_areas.update(face_bbox_areas[aid])
+
+            def _preview_sort_key(item):
+                fi, bool_mask, area, bbox_area = item
+                return actor_face_areas.get(fi, bbox_area or 0)
+
+            top5 = sorted(actor_all_frames, key=_preview_sort_key, reverse=True)[:5]
             preview_frame_indexes = []
             for k, (fi, bool_mask, _, _) in enumerate(top5):
                 frame_bgr = frame_lookup.get(fi)
