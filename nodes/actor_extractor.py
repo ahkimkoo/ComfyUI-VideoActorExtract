@@ -730,18 +730,22 @@ class VideoActorExtractor:
                 key=lambda x: x[0],
             )
 
-            # Save top 5 preview frames by face area (preferred) or mask bbox area (fallback)
-            # Apply green screen on-the-fly from bool mask + original frame
+            # Save top 5 preview frames by face area (largest face first)
+            # Only frames where InsightFace detected a face are candidates
             actor_face_areas: Dict[int, int] = {}
             for aid in identity_to_actors[actor_id]:
                 if aid in face_bbox_areas:
                     actor_face_areas.update(face_bbox_areas[aid])
 
-            def _preview_sort_key(item):
-                fi, bool_mask, area, bbox_area = item
-                return actor_face_areas.get(fi, bbox_area or 0)
+            face_detected_frames = [
+                (fi, mask, area, bbox_area)
+                for fi, mask, area, bbox_area in actor_all_frames
+                if fi in actor_face_areas
+            ]
 
-            top5 = sorted(actor_all_frames, key=_preview_sort_key, reverse=True)[:5]
+            top5 = sorted(
+                face_detected_frames, key=lambda x: actor_face_areas[x[0]], reverse=True
+            )[:5]
             preview_frame_indexes = []
             for k, (fi, bool_mask, _, _) in enumerate(top5):
                 frame_bgr = frame_lookup.get(fi)
