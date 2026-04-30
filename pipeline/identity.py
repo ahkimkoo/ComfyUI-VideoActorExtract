@@ -122,9 +122,8 @@ class IdentityCluster:
 
         h, w = frame.shape[:2]
 
-        # Try multiple expansion values to maximize face detection
-        # Start with moderate expansion, then try larger, then full frame
-        expand_values = [0.6, 1.0, 1.5, 2.0]
+        # Try a single good expansion value, then full-frame fallback
+        expand_values = [0.5]
 
         for expand in expand_values:
             bw = bbox.width * expand
@@ -185,17 +184,17 @@ class IdentityCluster:
             reverse=True,
         )
 
-        # Sample up to 30 frames, prioritizing largest area frames
-        max_samples = 30
+        # Sample up to 10 frames, prioritizing frames where person is largest
+        max_samples = 10
         if n <= max_samples:
             sample_records = sorted_records
         else:
             # Take top frames by area, but also ensure temporal coverage
-            top_by_area = sorted_records[:20]
+            top_by_area = sorted_records[:8]
 
             # Also sample evenly from the original (temporal) order
-            step = n / 10.0
-            temporal_indices = [int(i * step) for i in range(10)]
+            step = n / 3.0
+            temporal_indices = [int(i * step) for i in range(3)]
             top_temporal = [track_records[i] for i in temporal_indices]
 
             # Combine and deduplicate by frame_idx
