@@ -784,16 +784,35 @@ class VideoActorExtractor:
             if not segments_data:
                 continue
 
+            # Collect detected frame indices for this actor (to distinguish
+            # real detections from interpolated gap-filler frames)
+            detected_indices: set = set()
+            for aid in identity_to_actors[actor_id]:
+                detected_indices.update(long_actors[aid].frame_indices)
+
             # Convert bool-mask segments to BGR frames for encoding
+            # Interpolated frames reuse the previous composited frame (no copy)
             segments_bgr: List[List[np.ndarray]] = []
             for seg in segments_data:
                 bgr_frames = []
+                prev_composited = None
                 for fi, bool_mask, _ in seg:
-                    frame_bgr = frame_lookup.get(fi)
-                    if frame_bgr is None:
-                        frame_bgr = np.full((img_h, img_w, 3), bg_bgr, dtype=np.uint8)
-                    composited = frame_bgr.copy()
-                    composited[~bool_mask] = bg_bgr
+                    if fi in detected_indices:
+                        frame_bgr = frame_lookup.get(fi)
+                        if frame_bgr is None:
+                            frame_bgr = np.full(
+                                (img_h, img_w, 3), bg_bgr, dtype=np.uint8
+                            )
+                        composited = frame_bgr.copy()
+                        composited[~bool_mask] = bg_bgr
+                        prev_composited = composited
+                    elif prev_composited is not None:
+                        # Interpolated frame — reuse previous (cv2.VideoWriter
+                        # copies internally on write)
+                        composited = prev_composited
+                    else:
+                        composited = np.full((img_h, img_w, 3), bg_bgr, dtype=np.uint8)
+                        prev_composited = composited
                     bgr_frames.append(composited)
                 segments_bgr.append(bgr_frames)
 
