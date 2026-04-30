@@ -152,6 +152,73 @@ def merge_segments(
     return _encode_frames_to_temp(merged, output_path, fps)
 
 
+def merge_segments_rgba(
+    segments: List[List[np.ndarray]],
+    fps: float,
+    output_path: str,
+) -> bool:
+    """
+    Merge RGBA frame segments into a WebM video with VP9 alpha channel.
+
+    Each frame must be a BGRA uint8 numpy array. Person pixels have
+    alpha=255, background pixels alpha=0.
+
+    Args:
+        segments: List of frame lists, each list is one continuous segment.
+        fps: Frame rate.
+        output_path: Output .webm file path.
+
+    Returns:
+        True on success, False on failure.
+    """
+    if not segments or all(len(s) == 0 for s in segments):
+        return False
+
+    frames = [f for seg in segments if seg for f in seg]
+    if not frames:
+        return False
+
+    h, w = frames[0].shape[:2]
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-vcodec",
+        "rawvideo",
+        "-s",
+        f"{w}x{h}",
+        "-pix_fmt",
+        "bgra",
+        "-r",
+        str(fps),
+        "-i",
+        "-",
+        "-c:v",
+        "libvpx-vp9",
+        "-pix_fmt",
+        "yuva420p",
+        "-auto-alt-ref",
+        "0",
+        "-an",
+        output_path,
+    ]
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        raw_data = np.stack(frames).tobytes()
+        proc.communicate(input=raw_data, timeout=300)
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
 def generate_actor_json(
     actor_data: Dict[str, dict],
     video_info: dict,
