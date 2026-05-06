@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI-VideoActorExtract"
-version = "1.1.0"
+version = "1.2.0"
 description = "Extract individual actors from video with green screen background, face-based identity clustering, and structured metadata output"
 readme = "README.md"
 requires-python = ">=3.10"
