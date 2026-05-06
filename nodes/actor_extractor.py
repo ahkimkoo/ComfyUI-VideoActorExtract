@@ -810,10 +810,10 @@ class VideoActorExtractor:
                             frame_bgr = frame_lookup.get(fi)
                             if frame_bgr is None:
                                 frame_bgr = np.zeros((img_h, img_w, 3), dtype=np.uint8)
-                            bgra = np.zeros((img_h, img_w, 4), dtype=np.uint8)
-                            bgra[bool_mask, :3] = frame_bgr[bool_mask]
-                            bgra[bool_mask, 3] = 255
-                            prev_composited = bgra
+                            composited = np.zeros((img_h, img_w, 4), dtype=np.uint8)
+                            composited[bool_mask, :3] = frame_bgr[bool_mask]
+                            composited[bool_mask, 3] = 255
+                            prev_composited = composited
                         elif prev_composited is not None:
                             composited = prev_composited
                         else:
