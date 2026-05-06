@@ -9,3 +9,6 @@ build/
 test_output/
 output/
 models/
+*.zip
+.DS_Store
+.playwright-mcp/
